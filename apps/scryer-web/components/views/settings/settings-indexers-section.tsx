@@ -51,6 +51,7 @@ import type {
   IndexerDownloadClientMappingCatalogResource,
 } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
+import { applyIndexerConfigOption } from "@/lib/utils/indexer-setup";
 import { cn } from "@/lib/utils";
 import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import {
@@ -953,10 +954,15 @@ export function SettingsIndexersSection({
     (key: string, value: string) => {
       setIndexerDraft((prev) => ({
         ...prev,
-        configValues: { ...prev.configValues, [key]: value },
+        configValues: applyIndexerConfigOption(
+          selectedProviderFields,
+          prev.configValues,
+          key,
+          value,
+        ),
       }));
     },
-    [setIndexerDraft],
+    [selectedProviderFields, setIndexerDraft],
   );
 
   const handleProviderTypeChange = React.useCallback(

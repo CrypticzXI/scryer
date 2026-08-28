@@ -12874,6 +12874,24 @@ type PluginConfigFieldOptionPayload {
 	Display label for the option.
 	"""
 	label: String!
+	"""
+	Other configuration fields populated when this option is selected.
+	"""
+	configOverrides: [PluginConfigFieldOverridePayload!]!
+}
+
+"""
+One field value supplied by a selected plugin configuration preset.
+"""
+type PluginConfigFieldOverridePayload {
+	"""
+	Configuration field key to populate.
+	"""
+	key: String!
+	"""
+	Configuration field value to populate.
+	"""
+	value: String!
 }
 
 """

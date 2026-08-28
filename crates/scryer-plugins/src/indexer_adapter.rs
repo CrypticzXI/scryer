@@ -4,8 +4,10 @@ use scryer_application::NullIndexerErrorRecorder;
 use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerErrorOperation,
     IndexerErrorRecorder, IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchCompletion,
-    IndexerSearchIncompleteReason as HostIncompleteReason, IndexerSearchResponse,
-    IndexerSearchResult, SearchMode, is_valid_magnet_uri, normalize_release_password,
+    IndexerSearchIncompleteReason as HostIncompleteReason, IndexerSearchPlanCapability,
+    IndexerSearchPlanRequest, IndexerSearchPlanSummary, IndexerSearchResponse, IndexerSearchResult,
+    IndexerSearchStrategyEvent, IndexerSearchStrategyEventSink, SearchMode, is_valid_magnet_uri,
+    normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use scryer_plugin_sdk::command::{
@@ -14,7 +16,8 @@ use scryer_plugin_sdk::command::{
 };
 use scryer_plugin_sdk::{
     IndexerSearchIncompleteReason as PluginIncompleteReason, IndexerSearchPluginError, PluginError,
-    PluginErrorDetails, PluginResult, ProviderDescriptor,
+    PluginErrorDetails, PluginResult, PluginSearchPlanRequest, PluginSearchPlanSummary,
+    PluginSearchStrategyEvent, PluginSearchStrategyRequest, ProviderDescriptor,
 };
 use std::{
     collections::BTreeMap,
@@ -35,7 +38,10 @@ use crate::types::{
     normalize_indexer_info_hash, tagged_alias_to_sdk,
 };
 use crate::wasmtime_host::command_host::CommandHost;
-use crate::wasmtime_host::component_host::{ComponentActor, ComponentHost, ComponentRuntime};
+use crate::wasmtime_host::component_host::{
+    ComponentActor, ComponentContractVersion, ComponentHost, ComponentRuntime,
+    component_strategy_event_channel,
+};
 use crate::wasmtime_host::engine;
 use crate::wasmtime_host::{CommandInvocation, process_command};
 
@@ -356,7 +362,33 @@ impl WasmIndexerClient {
     ) -> Result<Self, AppError> {
         let inputs =
             build_runtime_inputs(&descriptor, &indexer_name, &config, indexer_proxy_config);
-        let host = ComponentHost::for_indexer(
+        let provider_profile = if descriptor.provider_type() == "newznab" {
+            let normalized_config_json =
+                serde_json::to_string(&inputs.config_entries).map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to serialize normalized Newznab configuration: {error}"
+                    ))
+                })?;
+            Some(
+                crate::newznab_profiles::resolve_newznab_profile_bytes(
+                    descriptor.indexer().ok_or_else(|| {
+                        AppError::Repository(
+                            "Newznab plugin descriptor is not an indexer".to_string(),
+                        )
+                    })?,
+                    &config.provider_type,
+                    Some(&normalized_config_json),
+                )
+                .map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to resolve Newznab provider profile: {error}"
+                    ))
+                })?,
+            )
+        } else {
+            None
+        };
+        let host = ComponentHost::for_indexer_with_provider_profile(
             inputs
                 .config_entries
                 .into_iter()
@@ -365,6 +397,7 @@ impl WasmIndexerClient {
             inputs.indexer_proxy_policy,
             inputs.timeout,
             None,
+            provider_profile,
         )
         .map_err(AppError::Repository)?;
         let runtime = ComponentRuntime::new(engine::shared_async_engine(), &wasm_bytes)
@@ -565,6 +598,136 @@ impl WasmIndexerClient {
             ))
         })?;
         Ok(Some(result))
+    }
+
+    async fn invoke_component_search_plan(
+        &self,
+        request: &PluginSearchPlanRequest,
+        operation: IndexerErrorOperation,
+        cancel_token: CancellationToken,
+        event_sink: &IndexerSearchStrategyEventSink,
+    ) -> AppResult<PluginSearchPlanSummary> {
+        let Some(indexer) = self.component.as_ref() else {
+            return Err(AppError::Repository(
+                "strategy plans require a component indexer".to_string(),
+            ));
+        };
+        let request = serde_json::to_vec(request).map_err(|error| {
+            AppError::Repository(format!(
+                "failed to encode indexer component strategy plan: {error}"
+            ))
+        })?;
+        let attested = matches!(
+            &self.descriptor.provider,
+            ProviderDescriptor::Indexer(descriptor)
+                if descriptor.search_semantics_version.is_some()
+        );
+        let mut actor = indexer.actor.lock().await;
+        indexer.host.bind_cancellation(cancel_token.clone());
+        indexer
+            .host
+            .begin_indexer_error_capture(self.indexer_error_capture(operation));
+        if actor.is_none() {
+            *actor = Some(
+                indexer
+                    .runtime
+                    .instantiate(&indexer.host)
+                    .await
+                    .map_err(|error| {
+                        AppError::Repository(format!(
+                            "indexer component {} could not start strategy plan: {error}",
+                            self.descriptor.id
+                        ))
+                    })?,
+            );
+        }
+
+        let (raw_event_tx, mut raw_event_rx) = component_strategy_event_channel();
+        let mut event_error = None;
+        let call_result = {
+            let Some(component_actor) = actor.as_mut() else {
+                unreachable!("component actor was initialized above");
+            };
+            let call = tokio::time::timeout(
+                indexer.timeout,
+                component_actor.search_plan(request, raw_event_tx),
+            );
+            tokio::pin!(call);
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        break Err(AppError::canceled("plugin indexer strategy plan canceled"));
+                    }
+                    event = raw_event_rx.recv(), if !raw_event_rx.is_closed() => {
+                        let Some(event) = event else {
+                            continue;
+                        };
+                        if let Err(error) = forward_component_strategy_event(
+                            self,
+                            &event,
+                            attested,
+                            event_sink,
+                        )
+                        .await
+                        {
+                            event_error = Some(error);
+                            cancel_token.cancel();
+                        }
+                    }
+                    result = &mut call => {
+                        break match result {
+                            Ok(Ok(response)) => Ok(response),
+                            Ok(Err(error)) => Err(AppError::Repository(format!(
+                                "indexer component {} strategy plan failed: {error}",
+                                self.descriptor.id
+                            ))),
+                            Err(_) => Err(AppError::Repository(format!(
+                                "indexer component {} strategy plan timed out after {} ms",
+                                self.descriptor.id,
+                                indexer.timeout.as_millis(),
+                            ))),
+                        };
+                    }
+                }
+            }
+        };
+
+        if let Some(error) = event_error {
+            actor.take();
+            indexer.host.finish_indexer_error_capture(true);
+            return Err(error);
+        }
+        let response = match call_result {
+            Ok(response) => response,
+            Err(error) => {
+                actor.take();
+                indexer.host.finish_indexer_error_capture(true);
+                return Err(error);
+            }
+        };
+        while let Ok(event) = raw_event_rx.try_recv() {
+            if let Err(error) =
+                forward_component_strategy_event(self, &event, attested, event_sink).await
+            {
+                actor.take();
+                indexer.host.finish_indexer_error_capture(true);
+                return Err(error);
+            }
+        }
+        let bytes = response.map_err(|error| {
+            AppError::Repository(format!(
+                "indexer component {} strategy plan returned invocation error {error:?}",
+                self.descriptor.id
+            ))
+        })?;
+        let summary = serde_json::from_slice::<PluginSearchPlanSummary>(&bytes).map_err(|error| {
+            AppError::Repository(format!(
+                "indexer component {} returned an invalid strategy summary: {error}",
+                self.descriptor.id
+            ))
+        });
+        indexer.host.finish_indexer_error_capture(summary.is_err());
+        summary
     }
 
     #[allow(dead_code)]
@@ -1538,8 +1701,185 @@ fn insert_value<T: serde::Serialize>(
     insert_json(extra, key, value);
 }
 
+fn host_search_response(
+    client: &WasmIndexerClient,
+    response: PluginSearchCallResponse,
+) -> IndexerSearchResponse {
+    let PluginSearchCallResponse {
+        response,
+        completion,
+    } = response;
+    let source = format!(
+        "{} ({})",
+        client.indexer_name,
+        client.descriptor.provider_type()
+    );
+    let results = response
+        .results
+        .into_iter()
+        .map(|result| {
+            let extra = merge_result_extra(&result);
+            let response_attributes = response_attributes(&extra);
+            let password_hint = plugin_password_hint(&result, &extra);
+            let source_kind = explicit_source_kind(&result, &extra).or_else(|| {
+                DownloadSourceKind::infer_from_indexer_result(
+                    Some(client.descriptor.plugin_type()),
+                    result.download_url.as_deref(),
+                    result.link.as_deref(),
+                    &extra,
+                )
+            });
+
+            IndexerSearchResult {
+                indexer_id: None,
+                source: source.clone(),
+                title: result.title,
+                link: result.link,
+                download_url: result.download_url,
+                source_kind,
+                size_bytes: result.size_bytes,
+                published_at: result.published_at,
+                thumbs_up: result.thumbs_up,
+                thumbs_down: result.thumbs_down,
+                indexer_languages: (!result.languages.is_empty()).then_some(result.languages),
+                indexer_subtitles: (!result.subtitles.is_empty()).then_some(result.subtitles),
+                indexer_grabs: result.grabs,
+                password_hint,
+                candidate_token: None,
+                parsed_release_metadata: None,
+                quality_profile_decision: None,
+                extra,
+                response_attributes,
+                guid: result.guid,
+                info_url: result.info_url,
+                provenance: None,
+                queue_scope: None,
+                coverage_scope: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+            }
+        })
+        .collect();
+
+    IndexerSearchResponse {
+        results,
+        indexer_outcomes: Vec::new(),
+        completion,
+        api_current: response.api_current,
+        api_max: response.api_max,
+        grab_current: response.grab_current,
+        grab_max: response.grab_max,
+    }
+}
+
+async fn forward_component_strategy_event(
+    client: &WasmIndexerClient,
+    bytes: &[u8],
+    attested: bool,
+    sink: &IndexerSearchStrategyEventSink,
+) -> AppResult<()> {
+    let event = serde_json::from_slice::<PluginSearchStrategyEvent>(bytes).map_err(|error| {
+        AppError::Repository(format!(
+            "indexer component {} emitted an invalid strategy event: {error}",
+            client.descriptor.id
+        ))
+    })?;
+    let response = decode_search_result(
+        event.result,
+        attested,
+        "indexer strategy-plan component event",
+    )
+    .map(|response| host_search_response(client, response));
+    sink.send(IndexerSearchStrategyEvent {
+        strategy_id: event.strategy_id,
+        response,
+    })
+    .await
+    .map_err(|_| AppError::canceled("indexer strategy result channel closed"))
+}
+
 #[async_trait]
 impl IndexerClient for WasmIndexerClient {
+    fn search_plan_capability(&self) -> Option<IndexerSearchPlanCapability> {
+        let component = self.component.as_ref()?;
+        if component.runtime.contract_version() != ComponentContractVersion::V1_1 {
+            return None;
+        }
+        let ProviderDescriptor::Indexer(descriptor) = &self.descriptor.provider else {
+            return None;
+        };
+        let capability = descriptor.strategy_plan?;
+        (capability.version == 1).then_some(IndexerSearchPlanCapability {
+            version: capability.version,
+            max_parallel_strategies: capability.max_parallel_strategies,
+        })
+    }
+
+    async fn search_plan(
+        &self,
+        request: IndexerSearchPlanRequest,
+        mode: SearchMode,
+        operation: IndexerErrorOperation,
+        cancel_token: CancellationToken,
+        event_sink: IndexerSearchStrategyEventSink,
+    ) -> AppResult<IndexerSearchPlanSummary> {
+        if self.search_plan_capability().is_none() {
+            return Err(AppError::Repository(
+                "indexer does not support strategy-plan search".to_string(),
+            ));
+        }
+        if cancel_token.is_cancelled() {
+            return Err(AppError::canceled("plugin indexer strategy plan canceled"));
+        }
+        let plan = PluginSearchPlanRequest {
+            plan_id: request.plan_id,
+            strategies: request
+                .strategies
+                .into_iter()
+                .map(|strategy| {
+                    let context = build_search_context(
+                        &strategy.query,
+                        &strategy.ids,
+                        strategy.facet.as_deref(),
+                        mode,
+                        strategy.season,
+                        strategy.episode,
+                        strategy.absolute_episode,
+                    );
+                    PluginSearchStrategyRequest {
+                        strategy_id: strategy.strategy_id,
+                        labels: strategy.labels,
+                        request: PluginSearchRequest {
+                            query: strategy.query,
+                            ids: strategy.ids,
+                            facet: strategy.facet,
+                            category: strategy.category,
+                            categories: strategy.newznab_categories.unwrap_or_default(),
+                            limit: 1000,
+                            season: strategy.season,
+                            episode: strategy.episode,
+                            absolute_episode: strategy.absolute_episode,
+                            tagged_aliases: strategy
+                                .tagged_aliases
+                                .into_iter()
+                                .map(tagged_alias_to_sdk)
+                                .collect(),
+                            context: Some(context),
+                        },
+                    }
+                })
+                .collect(),
+        };
+        let summary = self
+            .invoke_component_search_plan(&plan, operation, cancel_token, &event_sink)
+            .await?;
+        Ok(IndexerSearchPlanSummary {
+            plan_id: summary.plan_id,
+            emitted_strategy_ids: summary.emitted_strategy_ids,
+        })
+    }
+
     async fn search(
         &self,
         query: String,
@@ -1587,12 +1927,14 @@ impl IndexerClient for WasmIndexerClient {
             context: Some(context),
         };
 
+        let legacy_adapter_fallback = self.search_plan_capability().is_none();
         let response = match self
             .call_search_request(&request, operation, cancel_token.child_token())
             .await
         {
             Ok(response)
                 if response.response.results.is_empty()
+                    && legacy_adapter_fallback
                     && should_try_generic_search_fallback(&request) =>
             {
                 let fallback_request = generic_search_fallback_request(&request, mode);
@@ -1600,7 +1942,9 @@ impl IndexerClient for WasmIndexerClient {
                     .await?
             }
             Ok(response) => response,
-            Err(primary_error) if should_try_generic_search_fallback(&request) => {
+            Err(primary_error)
+                if legacy_adapter_fallback && should_try_generic_search_fallback(&request) =>
+            {
                 if primary_error.is_canceled() {
                     return Err(primary_error);
                 }
@@ -1615,82 +1959,7 @@ impl IndexerClient for WasmIndexerClient {
             }
             Err(error) => return Err(error),
         };
-        let PluginSearchCallResponse {
-            response,
-            completion,
-        } = response;
-
-        let source = format!(
-            "{} ({})",
-            self.indexer_name,
-            self.descriptor.provider_type()
-        );
-        let results = response
-            .results
-            .into_iter()
-            .map(|r| {
-                let extra = merge_result_extra(&r);
-                let response_attributes = response_attributes(&extra);
-                let password_hint = plugin_password_hint(&r, &extra);
-                let source_kind = explicit_source_kind(&r, &extra).or_else(|| {
-                    DownloadSourceKind::infer_from_indexer_result(
-                        Some(self.descriptor.plugin_type()),
-                        r.download_url.as_deref(),
-                        r.link.as_deref(),
-                        &extra,
-                    )
-                });
-
-                IndexerSearchResult {
-                    indexer_id: None,
-                    source: source.clone(),
-                    title: r.title,
-                    link: r.link,
-                    download_url: r.download_url,
-                    source_kind,
-                    size_bytes: r.size_bytes,
-                    published_at: r.published_at,
-                    thumbs_up: r.thumbs_up,
-                    thumbs_down: r.thumbs_down,
-                    indexer_languages: if r.languages.is_empty() {
-                        None
-                    } else {
-                        Some(r.languages)
-                    },
-                    indexer_subtitles: if r.subtitles.is_empty() {
-                        None
-                    } else {
-                        Some(r.subtitles)
-                    },
-                    indexer_grabs: r.grabs,
-                    password_hint,
-                    candidate_token: None,
-                    parsed_release_metadata: None,
-                    quality_profile_decision: None,
-                    extra,
-                    response_attributes,
-                    guid: r.guid,
-                    info_url: r.info_url,
-                    provenance: None,
-                    queue_scope: None,
-                    coverage_scope: None,
-                    auto_eligible: None,
-                    auto_decision_code: None,
-                    auto_decision_summary: None,
-                }
-            })
-            .collect();
-
-        Ok(IndexerSearchResponse {
-            results,
-            indexer_outcomes: Vec::new(),
-            completion,
-
-            api_current: response.api_current,
-            api_max: response.api_max,
-            grab_current: response.grab_current,
-            grab_max: response.grab_max,
-        })
+        Ok(host_search_response(self, response))
     }
 
     async fn search_stream(
@@ -2117,6 +2386,7 @@ mod tests {
             provider: crate::types::ProviderDescriptor::Indexer(crate::types::IndexerDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: vec![],
+                provider_profiles: vec![],
                 source_kind: crate::types::IndexerSourceKind::Usenet,
                 capabilities: crate::types::IndexerCapabilities::default(),
                 scoring_policies: vec![],
@@ -2135,6 +2405,7 @@ mod tests {
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
                 search_semantics_version: Some(1),
+                strategy_plan: None,
             }),
         }
     }

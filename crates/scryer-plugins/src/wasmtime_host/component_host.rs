@@ -12,7 +12,8 @@ use std::time::Duration;
 use scryer_application::{
     CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, challenge_solver as solver,
 };
-use wasmtime::component::{Component, HasSelf, Linker, ResourceTable, bindgen};
+use tokio::sync::mpsc;
+use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
@@ -22,12 +23,21 @@ use crate::plugin_http_host::{
 };
 use crate::wasmtime_host::sandbox::HostLimits;
 
-bindgen!({
-    world: "indexer-plugin",
-    path: "wit",
-});
+mod contract_v1_0 {
+    wasmtime::component::bindgen!({
+        world: "scryer:indexer/indexer-plugin@1.0.0",
+        path: "wit",
+    });
+}
 
-use self::scryer::indexer::host::{
+mod contract_v1_1 {
+    wasmtime::component::bindgen!({
+        world: "scryer:indexer/indexer-plugin@1.1.0",
+        path: "wit/indexer-v1.1.0",
+    });
+}
+
+use self::contract_v1_0::scryer::indexer::host::{
     Header, Host, HostWithStore, HttpRequest, HttpResponse, LogLevel, TransportError,
 };
 
@@ -35,6 +45,7 @@ const MAX_COMPONENT_HTTP_PER_ACTOR: usize = 256;
 const MAX_COMPONENT_HTTP_PROCESS: usize = 1024;
 const MAX_COMPONENT_STATE_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_HTTP_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
+pub(crate) const COMPONENT_STRATEGY_EVENT_CAPACITY: usize = 16;
 
 static ACTIVE_COMPONENT_HTTP: AtomicUsize = AtomicUsize::new(0);
 
@@ -56,6 +67,11 @@ pub(crate) fn validate_indexer_component(wasm: &[u8]) -> Result<(), String> {
     ComponentRuntime::new(crate::wasmtime_host::engine::shared_async_engine(), wasm).map(|_| ())
 }
 
+pub(crate) fn component_strategy_event_channel() -> (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>)
+{
+    mpsc::channel(COMPONENT_STRATEGY_EVENT_CAPACITY)
+}
+
 #[derive(Clone)]
 pub(crate) struct ComponentHost {
     inner: Arc<ComponentHostInner>,
@@ -63,6 +79,7 @@ pub(crate) struct ComponentHost {
 
 struct ComponentHostInner {
     config: BTreeMap<String, String>,
+    provider_profile: Option<Vec<u8>>,
     allowed_hosts: Vec<String>,
     indexer_proxy_policy: Option<IndexerProxyPolicy>,
     timeout: Duration,
@@ -73,6 +90,7 @@ struct ComponentHostInner {
     active: AtomicUsize,
     cancellation: Mutex<tokio_util::sync::CancellationToken>,
     indexer_error_capture: Mutex<Option<ComponentIndexerErrorCapture>>,
+    strategy_events: Mutex<StrategyEventState>,
 }
 
 #[derive(Default)]
@@ -86,7 +104,45 @@ struct ComponentIndexerErrorCapture {
     final_response: Option<CapturedIndexerHttpResponse>,
 }
 
+#[derive(Default)]
+struct StrategyEventState {
+    next_scope_id: u64,
+    active: Option<ActiveStrategyEventSink>,
+}
+
+struct ActiveStrategyEventSink {
+    scope_id: u64,
+    sender: mpsc::Sender<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StrategyEventSinkError {
+    NoActivePlan,
+    Closed,
+}
+
+struct StrategyPlanScope {
+    host: ComponentHost,
+    scope_id: u64,
+}
+
+impl Drop for StrategyPlanScope {
+    fn drop(&mut self) {
+        let Ok(mut state) = self.host.inner.strategy_events.lock() else {
+            return;
+        };
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.scope_id == self.scope_id)
+        {
+            state.active = None;
+        }
+    }
+}
+
 impl ComponentHost {
+    #[cfg(test)]
     pub(crate) fn for_indexer(
         config: BTreeMap<String, String>,
         allowed_hosts: Vec<String>,
@@ -94,9 +150,28 @@ impl ComponentHost {
         timeout: Duration,
         max_http_response_bytes: Option<u64>,
     ) -> Result<Self, String> {
+        Self::for_indexer_with_provider_profile(
+            config,
+            allowed_hosts,
+            indexer_proxy_policy,
+            timeout,
+            max_http_response_bytes,
+            None,
+        )
+    }
+
+    pub(crate) fn for_indexer_with_provider_profile(
+        config: BTreeMap<String, String>,
+        allowed_hosts: Vec<String>,
+        indexer_proxy_policy: Option<IndexerProxyPolicy>,
+        timeout: Duration,
+        max_http_response_bytes: Option<u64>,
+        provider_profile: Option<Vec<u8>>,
+    ) -> Result<Self, String> {
         Ok(Self {
             inner: Arc::new(ComponentHostInner {
                 config,
+                provider_profile,
                 allowed_hosts,
                 indexer_proxy_policy,
                 timeout,
@@ -109,6 +184,7 @@ impl ComponentHost {
                 active: AtomicUsize::new(0),
                 cancellation: Mutex::new(tokio_util::sync::CancellationToken::new()),
                 indexer_error_capture: Mutex::new(None),
+                strategy_events: Mutex::new(StrategyEventState::default()),
             }),
         })
     }
@@ -129,6 +205,57 @@ impl ComponentHost {
             .lock()
             .map(|token| token.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    fn provider_profile(&self) -> Option<Vec<u8>> {
+        self.inner.provider_profile.clone()
+    }
+
+    fn begin_strategy_plan(
+        &self,
+        sender: mpsc::Sender<Vec<u8>>,
+    ) -> Result<StrategyPlanScope, String> {
+        if sender.is_closed() {
+            return Err("indexer component strategy event sink is closed".to_string());
+        }
+        let mut state = self
+            .inner
+            .strategy_events
+            .lock()
+            .map_err(|_| "indexer component strategy event state is unavailable".to_string())?;
+        if state.active.is_some() {
+            return Err("indexer component strategy plan is already active".to_string());
+        }
+        state.next_scope_id = state.next_scope_id.wrapping_add(1);
+        let scope_id = state.next_scope_id;
+        state.active = Some(ActiveStrategyEventSink { scope_id, sender });
+        Ok(StrategyPlanScope {
+            host: self.clone(),
+            scope_id,
+        })
+    }
+
+    async fn emit_strategy_event(&self, event: Vec<u8>) -> Result<(), StrategyEventSinkError> {
+        let sender = {
+            let state = self
+                .inner
+                .strategy_events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .active
+                .as_ref()
+                .map(|active| active.sender.clone())
+                .ok_or(StrategyEventSinkError::NoActivePlan)?
+        };
+        if sender.is_closed() {
+            return Err(StrategyEventSinkError::Closed);
+        }
+        let cancellation = self.cancellation();
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(StrategyEventSinkError::Closed),
+            result = sender.send(event) => result.map_err(|_| StrategyEventSinkError::Closed),
+        }
     }
 
     pub(crate) fn new_store(&self, engine: &Engine) -> Store<ComponentCtx> {
@@ -749,6 +876,75 @@ impl Host for ComponentCtx {
     }
 }
 
+impl contract_v1_1::scryer::indexer::host::Host for ComponentCtx {
+    fn monotonic_now_ms(&mut self) -> u64 {
+        self.host
+            .inner
+            .clock_origin
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn wall_now_ms(&mut self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn operation_deadline_monotonic_ms(&mut self) -> u64 {
+        let deadline = self
+            .host
+            .inner
+            .operation_deadline
+            .lock()
+            .map(|deadline| *deadline)
+            .unwrap_or_else(|poisoned| *poisoned.into_inner());
+        deadline
+            .saturating_duration_since(self.host.inner.clock_origin)
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn config_get(&mut self, key: String) -> Option<String> {
+        self.host.inner.config.get(&key).cloned()
+    }
+
+    fn provider_profile(&mut self) -> Option<Vec<u8>> {
+        self.host.provider_profile()
+    }
+
+    fn state_get(&mut self, key: String) -> Option<Vec<u8>> {
+        self.host.state_get(&key)
+    }
+
+    fn state_cas(
+        &mut self,
+        key: String,
+        expected: Option<Vec<u8>>,
+        replacement: Option<Vec<u8>>,
+    ) -> bool {
+        self.host.state_cas(key, expected, replacement)
+    }
+
+    fn log(&mut self, level: contract_v1_1::scryer::indexer::host::LogLevel, message: String) {
+        use contract_v1_1::scryer::indexer::host::LogLevel as V1LogLevel;
+
+        match level {
+            V1LogLevel::Trace => tracing::trace!(target: "scryer_plugins::component", "{message}"),
+            V1LogLevel::Debug => tracing::debug!(target: "scryer_plugins::component", "{message}"),
+            V1LogLevel::Info => tracing::info!(target: "scryer_plugins::component", "{message}"),
+            V1LogLevel::Warn => tracing::warn!(target: "scryer_plugins::component", "{message}"),
+            V1LogLevel::Error => tracing::error!(target: "scryer_plugins::component", "{message}"),
+        }
+    }
+}
+
 impl HostWithStore<ComponentCtx> for HasSelf<ComponentCtx> {
     fn http(
         accessor: &wasmtime::component::Accessor<ComponentCtx, Self>,
@@ -772,9 +968,123 @@ impl HostWithStore<ComponentCtx> for HasSelf<ComponentCtx> {
     }
 }
 
+impl contract_v1_1::scryer::indexer::host::HostWithStore<ComponentCtx> for HasSelf<ComponentCtx> {
+    fn http(
+        accessor: &wasmtime::component::Accessor<ComponentCtx, Self>,
+        request: contract_v1_1::scryer::indexer::host::HttpRequest,
+    ) -> impl std::future::Future<
+        Output = Result<
+            contract_v1_1::scryer::indexer::host::HttpResponse,
+            contract_v1_1::scryer::indexer::host::TransportError,
+        >,
+    > + Send {
+        let host = accessor.with(|mut access| access.get().host.clone());
+        async move {
+            let request = HttpRequest {
+                method: request.method,
+                url: request.url,
+                headers: request
+                    .headers
+                    .into_iter()
+                    .map(|header| Header {
+                        name: header.name,
+                        value: header.value,
+                    })
+                    .collect(),
+                body: request.body,
+            };
+            host.http(request)
+                .await
+                .map(
+                    |response| contract_v1_1::scryer::indexer::host::HttpResponse {
+                        status: response.status,
+                        headers: response
+                            .headers
+                            .into_iter()
+                            .map(|header| contract_v1_1::scryer::indexer::host::Header {
+                                name: header.name,
+                                value: header.value,
+                            })
+                            .collect(),
+                        body: response.body,
+                    },
+                )
+                .map_err(v1_1_transport_error)
+        }
+    }
+
+    fn sleep(
+        accessor: &wasmtime::component::Accessor<ComponentCtx, Self>,
+        duration_ms: u64,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        let cancellation = accessor.with(|mut access| access.get().host.cancellation());
+        async move {
+            tokio::select! {
+                _ = cancellation.cancelled() => (),
+                _ = tokio::time::sleep(Duration::from_millis(duration_ms)) => (),
+            }
+        }
+    }
+
+    fn emit_strategy_event(
+        accessor: &wasmtime::component::Accessor<ComponentCtx, Self>,
+        event: Vec<u8>,
+    ) -> impl std::future::Future<
+        Output = Result<(), contract_v1_1::scryer::indexer::host::StrategyEventError>,
+    > + Send {
+        let host = accessor.with(|mut access| access.get().host.clone());
+        async move {
+            host.emit_strategy_event(event)
+                .await
+                .map_err(|error| match error {
+                    StrategyEventSinkError::NoActivePlan => {
+                        contract_v1_1::scryer::indexer::host::StrategyEventError::NoActivePlan
+                    }
+                    StrategyEventSinkError::Closed => {
+                        contract_v1_1::scryer::indexer::host::StrategyEventError::Closed
+                    }
+                })
+        }
+    }
+}
+
+fn v1_1_transport_error(
+    error: TransportError,
+) -> contract_v1_1::scryer::indexer::host::TransportError {
+    use contract_v1_1::scryer::indexer::host::TransportError as V1TransportError;
+
+    match error {
+        TransportError::InvalidRequest => V1TransportError::InvalidRequest,
+        TransportError::ForbiddenOrigin => V1TransportError::ForbiddenOrigin,
+        TransportError::Timeout => V1TransportError::Timeout,
+        TransportError::Cancelled => V1TransportError::Cancelled,
+        TransportError::ResponseTooLarge => V1TransportError::ResponseTooLarge,
+        TransportError::Capacity => V1TransportError::Capacity,
+        TransportError::Transport => V1TransportError::Transport,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ComponentContractVersion {
+    V1_0,
+    V1_1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ComponentInvocationError {
+    Failed,
+    Cancelled,
+    InvalidResponse,
+}
+
+enum ComponentInstancePre {
+    V1_0(contract_v1_0::IndexerPluginPre<ComponentCtx>),
+    V1_1(contract_v1_1::IndexerPluginPre<ComponentCtx>),
+}
+
 pub(crate) struct ComponentRuntime {
     pub(crate) component: Arc<Component>,
-    instance_pre: IndexerPluginPre<ComponentCtx>,
+    instance_pre: ComponentInstancePre,
 }
 
 impl ComponentRuntime {
@@ -788,28 +1098,67 @@ impl ComponentRuntime {
         let mut linker = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)
             .map_err(|error| format!("failed to register WASI Preview 2: {error:#}"))?;
-        IndexerPlugin::add_to_linker::<ComponentCtx, HasSelf<ComponentCtx>>(&mut linker, |ctx| ctx)
-            .map_err(|error| format!("failed to register indexer component host: {error:#}"))?;
+        contract_v1_0::IndexerPlugin::add_to_linker::<ComponentCtx, HasSelf<ComponentCtx>>(
+            &mut linker,
+            |ctx| ctx,
+        )
+        .map_err(|error| format!("failed to register indexer 1.0 component host: {error:#}"))?;
+        contract_v1_1::IndexerPlugin::add_to_linker::<ComponentCtx, HasSelf<ComponentCtx>>(
+            &mut linker,
+            |ctx| ctx,
+        )
+        .map_err(|error| format!("failed to register indexer 1.1 component host: {error:#}"))?;
         let raw_instance_pre = linker
             .instantiate_pre(&component)
             .map_err(|error| format!("failed to preinstantiate indexer component: {error:#}"))?;
-        let instance_pre = IndexerPluginPre::new(raw_instance_pre)
-            .map_err(|error| format!("indexer component exports are incompatible: {error:#}"))?;
+        let instance_pre = match contract_v1_1::IndexerPluginPre::new(raw_instance_pre) {
+            Ok(instance_pre) => ComponentInstancePre::V1_1(instance_pre),
+            Err(v1_1_error) => {
+                let raw_instance_pre = linker.instantiate_pre(&component).map_err(|error| {
+                    format!("failed to preinstantiate indexer component: {error:#}")
+                })?;
+                contract_v1_0::IndexerPluginPre::new(raw_instance_pre)
+                    .map(ComponentInstancePre::V1_0)
+                    .map_err(|v1_0_error| {
+                        format!(
+                            "indexer component exports are incompatible with 1.1 ({v1_1_error:#}) and 1.0 ({v1_0_error:#})"
+                        )
+                    })?
+            }
+        };
         Ok(Self {
             component,
             instance_pre,
         })
     }
 
+    pub(crate) const fn contract_version(&self) -> ComponentContractVersion {
+        match &self.instance_pre {
+            ComponentInstancePre::V1_0(_) => ComponentContractVersion::V1_0,
+            ComponentInstancePre::V1_1(_) => ComponentContractVersion::V1_1,
+        }
+    }
+
     pub(crate) async fn instantiate(&self, host: &ComponentHost) -> Result<ComponentActor, String> {
         let mut store = host.new_store(self.component.engine());
-        let plugin = self
-            .instance_pre
-            .instantiate_async(&mut store)
-            .await
-            .map_err(|error| format!("failed to instantiate indexer component: {error:#}"))?;
+        let plugin = match &self.instance_pre {
+            ComponentInstancePre::V1_0(instance_pre) => instance_pre
+                .instantiate_async(&mut store)
+                .await
+                .map(ComponentPlugin::V1_0),
+            ComponentInstancePre::V1_1(instance_pre) => instance_pre
+                .instantiate_async(&mut store)
+                .await
+                .map(ComponentPlugin::V1_1),
+        }
+        .map_err(|error| format!("failed to instantiate indexer component: {error:#}"))?;
         Ok(ComponentActor { store, plugin })
     }
+}
+
+enum ComponentPlugin {
+    V1_0(contract_v1_0::IndexerPlugin),
+    V1_1(contract_v1_1::IndexerPlugin),
 }
 
 /// A component instance is retained per configured indexer. The adapter owns
@@ -817,42 +1166,191 @@ impl ComponentRuntime {
 /// timeout, or trap; that drops outstanding component HTTP futures too.
 pub(crate) struct ComponentActor {
     store: Store<ComponentCtx>,
-    plugin: IndexerPlugin,
+    plugin: ComponentPlugin,
 }
 
 impl ComponentActor {
     pub(crate) async fn search(
         &mut self,
         request: Vec<u8>,
-    ) -> Result<Result<Vec<u8>, InvocationError>, String> {
+    ) -> Result<Result<Vec<u8>, ComponentInvocationError>, String> {
         let host = self.store.data().host.clone();
         host.begin_operation(&mut self.store);
-        let plugin = &self.plugin;
+        match &self.plugin {
+            ComponentPlugin::V1_0(plugin) => self
+                .store
+                .run_concurrent(async move |accessor| plugin.call_search(accessor, request).await)
+                .await
+                .map_err(|error| format!("indexer component search scheduling failed: {error:#}"))?
+                .map_err(|error| format!("indexer component search failed: {error:#}"))
+                .map(|result| result.map_err(component_invocation_error_v1_0)),
+            ComponentPlugin::V1_1(plugin) => self
+                .store
+                .run_concurrent(async move |accessor| plugin.call_search(accessor, request).await)
+                .await
+                .map_err(|error| format!("indexer component search scheduling failed: {error:#}"))?
+                .map_err(|error| format!("indexer component search failed: {error:#}"))
+                .map(|result| result.map_err(component_invocation_error_v1_1)),
+        }
+    }
+
+    pub(crate) async fn search_plan(
+        &mut self,
+        request: Vec<u8>,
+        event_sink: mpsc::Sender<Vec<u8>>,
+    ) -> Result<Result<Vec<u8>, ComponentInvocationError>, String> {
+        let ComponentPlugin::V1_1(plugin) = &self.plugin else {
+            return Err(
+                "indexer component contract 1.0 does not support strategy plans".to_string(),
+            );
+        };
+        let host = self.store.data().host.clone();
+        let _scope = host.begin_strategy_plan(event_sink)?;
+        host.begin_operation(&mut self.store);
         self.store
-            .run_concurrent(async move |accessor| plugin.call_search(accessor, request).await)
+            .run_concurrent(async move |accessor| plugin.call_search_plan(accessor, request).await)
             .await
-            .map_err(|error| format!("indexer component search scheduling failed: {error:#}"))?
-            .map_err(|error| format!("indexer component search failed: {error:#}"))
+            .map_err(|error| {
+                format!("indexer component strategy plan scheduling failed: {error:#}")
+            })?
+            .map_err(|error| format!("indexer component strategy plan failed: {error:#}"))
+            .map(|result| result.map_err(component_invocation_error_v1_1))
     }
 
     pub(crate) async fn action(
         &mut self,
         request: Vec<u8>,
-    ) -> Result<Result<Vec<u8>, InvocationError>, String> {
+    ) -> Result<Result<Vec<u8>, ComponentInvocationError>, String> {
         let host = self.store.data().host.clone();
         host.begin_operation(&mut self.store);
-        let plugin = &self.plugin;
-        self.store
-            .run_concurrent(async move |accessor| plugin.call_action(accessor, request).await)
-            .await
-            .map_err(|error| format!("indexer component action scheduling failed: {error:#}"))?
-            .map_err(|error| format!("indexer component action failed: {error:#}"))
+        match &self.plugin {
+            ComponentPlugin::V1_0(plugin) => self
+                .store
+                .run_concurrent(async move |accessor| plugin.call_action(accessor, request).await)
+                .await
+                .map_err(|error| format!("indexer component action scheduling failed: {error:#}"))?
+                .map_err(|error| format!("indexer component action failed: {error:#}"))
+                .map(|result| result.map_err(component_invocation_error_v1_0)),
+            ComponentPlugin::V1_1(plugin) => self
+                .store
+                .run_concurrent(async move |accessor| plugin.call_action(accessor, request).await)
+                .await
+                .map_err(|error| format!("indexer component action scheduling failed: {error:#}"))?
+                .map_err(|error| format!("indexer component action failed: {error:#}"))
+                .map(|result| result.map_err(component_invocation_error_v1_1)),
+        }
+    }
+}
+
+fn component_invocation_error_v1_0(
+    error: contract_v1_0::InvocationError,
+) -> ComponentInvocationError {
+    match error {
+        contract_v1_0::InvocationError::Failed => ComponentInvocationError::Failed,
+        contract_v1_0::InvocationError::Cancelled => ComponentInvocationError::Cancelled,
+        contract_v1_0::InvocationError::InvalidResponse => {
+            ComponentInvocationError::InvalidResponse
+        }
+    }
+}
+
+fn component_invocation_error_v1_1(
+    error: contract_v1_1::InvocationError,
+) -> ComponentInvocationError {
+    match error {
+        contract_v1_1::InvocationError::Failed => ComponentInvocationError::Failed,
+        contract_v1_1::InvocationError::Cancelled => ComponentInvocationError::Cancelled,
+        contract_v1_1::InvocationError::InvalidResponse => {
+            ComponentInvocationError::InvalidResponse
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strategy_test_host(provider_profile: Option<Vec<u8>>) -> ComponentHost {
+        ComponentHost::for_indexer_with_provider_profile(
+            BTreeMap::new(),
+            Vec::new(),
+            None,
+            Duration::from_secs(1),
+            None,
+            provider_profile,
+        )
+        .expect("component host should build")
+    }
+
+    #[tokio::test]
+    async fn strategy_events_require_an_active_plan() {
+        let host = strategy_test_host(None);
+
+        assert_eq!(
+            host.emit_strategy_event(vec![1]).await,
+            Err(StrategyEventSinkError::NoActivePlan)
+        );
+    }
+
+    #[tokio::test]
+    async fn strategy_plan_scope_streams_and_then_closes() {
+        let host = strategy_test_host(Some(vec![9, 8, 7]));
+        let (sender, mut receiver) = component_strategy_event_channel();
+        let scope = host
+            .begin_strategy_plan(sender)
+            .expect("strategy plan should begin");
+
+        host.emit_strategy_event(vec![1, 2, 3])
+            .await
+            .expect("strategy event should be accepted");
+        assert_eq!(receiver.recv().await, Some(vec![1, 2, 3]));
+        assert_eq!(host.provider_profile(), Some(vec![9, 8, 7]));
+
+        drop(scope);
+        assert_eq!(
+            host.emit_strategy_event(vec![4]).await,
+            Err(StrategyEventSinkError::NoActivePlan)
+        );
+    }
+
+    #[tokio::test]
+    async fn strategy_event_sink_reports_a_closed_receiver() {
+        let host = strategy_test_host(None);
+        let (sender, receiver) = component_strategy_event_channel();
+        let _scope = host
+            .begin_strategy_plan(sender)
+            .expect("strategy plan should begin");
+        drop(receiver);
+
+        assert_eq!(
+            host.emit_strategy_event(vec![1]).await,
+            Err(StrategyEventSinkError::Closed)
+        );
+    }
+
+    #[tokio::test]
+    async fn strategy_event_sink_is_bounded() {
+        let host = strategy_test_host(None);
+        let (sender, _receiver) = component_strategy_event_channel();
+        let _scope = host
+            .begin_strategy_plan(sender)
+            .expect("strategy plan should begin");
+        for value in 0..COMPONENT_STRATEGY_EVENT_CAPACITY {
+            host.emit_strategy_event(vec![u8::try_from(value).expect("test value fits")])
+                .await
+                .expect("buffered event should be accepted");
+        }
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                host.emit_strategy_event(vec![u8::MAX])
+            )
+            .await
+            .is_err(),
+            "an event beyond the fixed channel capacity must apply backpressure"
+        );
+    }
 
     #[test]
     fn component_outbound_destination_errors_keep_their_category() {

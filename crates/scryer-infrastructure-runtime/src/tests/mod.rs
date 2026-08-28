@@ -84,6 +84,7 @@ fn test_descriptor_json(
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
                 search_semantics_version: None,
+                strategy_plan: None,
             })
         }
         "usenet_indexer" => {
@@ -97,6 +98,7 @@ fn test_descriptor_json(
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
                 search_semantics_version: None,
+                strategy_plan: None,
             })
         }
         "torrent_indexer" => {
@@ -110,6 +112,7 @@ fn test_descriptor_json(
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
                 search_semantics_version: None,
+                strategy_plan: None,
             })
         }
         "notification" => scryer_plugin_sdk::ProviderDescriptor::Notification(

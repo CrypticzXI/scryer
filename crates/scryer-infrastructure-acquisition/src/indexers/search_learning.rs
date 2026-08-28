@@ -6,6 +6,7 @@ use scryer_application::{
     AppError, AppResult, IndexerSearchCandidateWrite, IndexerSearchLearningKey,
     IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerSearchRunWrite,
     NormalizedIndexerSearchCandidate, ReusableIndexerSearchCandidate,
+    ReusableIndexerSearchStrategy,
 };
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
@@ -644,6 +645,69 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
         self.hydrate_candidates(rows).await
     }
 
+    async fn list_reusable_search_strategies(
+        &self,
+        indexer_id: &str,
+        scope_key: &str,
+        indexer_fingerprint: &str,
+        created_after: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> AppResult<Vec<ReusableIndexerSearchStrategy>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT r.id, r.query_signature, r.branch, r.completion_state, r.retry_at,
+                    EXISTS (
+                        SELECT 1 FROM indexer_search_candidates c
+                        WHERE c.run_id = r.id
+                          AND c.reusable_until >= {}
+                          AND c.expires_at >= {}
+                    ) AS has_reusable_candidates
+             FROM indexer_search_runs r
+             WHERE r.indexer_id = {}
+               AND r.scope_key = {}
+               AND r.indexer_fingerprint = {}
+               AND r.created_at >= {}
+             ORDER BY r.created_at DESC, r.id DESC",
+            &[
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+                SqlArg::Text(indexer_id.to_string()),
+                SqlArg::Text(scope_key.to_string()),
+                SqlArg::Text(indexer_fingerprint.to_string()),
+                SqlArg::Timestamp(created_after),
+            ],
+        )
+        .await?;
+
+        let mut positions = std::collections::HashMap::new();
+        let mut states = Vec::new();
+        for row in rows {
+            let query_signature = row.text("query_signature")?;
+            let has_reusable_candidates = row.bool("has_reusable_candidates")?;
+            if let Some(position) = positions.get(&query_signature).copied() {
+                let state: &mut ReusableIndexerSearchStrategy = &mut states[position];
+                if state.completion_state != "complete"
+                    && state.candidate_run_id.is_none()
+                    && has_reusable_candidates
+                {
+                    state.candidate_run_id = Some(row.text("id")?);
+                }
+                continue;
+            }
+            let run_id = row.text("id")?;
+            positions.insert(query_signature.clone(), states.len());
+            states.push(ReusableIndexerSearchStrategy {
+                candidate_run_id: has_reusable_candidates.then(|| run_id.clone()),
+                run_id,
+                query_signature,
+                branch: row.text("branch")?,
+                completion_state: row.text("completion_state")?,
+                retry_at: row.opt_timestamp("retry_at")?,
+            });
+        }
+        Ok(states)
+    }
+
     async fn cleanup_search_diagnostics(
         &self,
         candidate_cutoff: DateTime<Utc>,
@@ -1186,6 +1250,48 @@ mod tests {
                 .expect("duplicate page candidates should rehydrate")
                 .is_empty(),
             "a session identity is admitted only once"
+        );
+
+        let completed_state = store
+            .list_reusable_search_strategies(
+                &run.indexer_id,
+                &run.scope_key,
+                &run.indexer_fingerprint,
+                now - chrono::Duration::seconds(1),
+                now,
+            )
+            .await
+            .expect("strategy state should reload");
+        assert_eq!(completed_state.len(), 1);
+        assert_eq!(completed_state[0].run_id, duplicate_run.id);
+        assert_eq!(completed_state[0].completion_state, "complete");
+        assert_eq!(completed_state[0].candidate_run_id, None);
+
+        let mut partial_run = run.clone();
+        partial_run.id = "run-3".into();
+        partial_run.completion_state = "partial".into();
+        partial_run.result_count = 0;
+        partial_run.created_at = now + chrono::Duration::seconds(1);
+        store
+            .record_search_diagnostics(&partial_run, &[])
+            .await
+            .expect("partial strategy diagnostics should persist");
+        let partial_state = store
+            .list_reusable_search_strategies(
+                &run.indexer_id,
+                &run.scope_key,
+                &run.indexer_fingerprint,
+                now - chrono::Duration::seconds(1),
+                now,
+            )
+            .await
+            .expect("partial strategy state should reload");
+        assert_eq!(partial_state.len(), 1);
+        assert_eq!(partial_state[0].run_id, partial_run.id);
+        assert_eq!(partial_state[0].completion_state, "partial");
+        assert_eq!(
+            partial_state[0].candidate_run_id.as_deref(),
+            Some(run.id.as_str())
         );
 
         let reusable = store

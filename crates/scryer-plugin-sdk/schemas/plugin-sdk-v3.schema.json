@@ -24,6 +24,18 @@
     "indexer_search_response": {
       "$ref": "#/$defs/PluginSearchResponse"
     },
+    "indexer_search_plan_request": {
+      "$ref": "#/$defs/PluginSearchPlanRequest"
+    },
+    "indexer_search_strategy_event": {
+      "$ref": "#/$defs/PluginSearchStrategyEvent"
+    },
+    "indexer_search_plan_summary": {
+      "$ref": "#/$defs/PluginSearchPlanSummary"
+    },
+    "provider_profile": {
+      "$ref": "#/$defs/PluginProviderProfile"
+    },
     "subtitle_search_request": {
       "$ref": "#/$defs/SubtitlePluginSearchRequest"
     },
@@ -117,6 +129,10 @@
     "host_response",
     "indexer_search_request",
     "indexer_search_response",
+    "indexer_search_plan_request",
+    "indexer_search_strategy_event",
+    "indexer_search_plan_summary",
+    "provider_profile",
     "subtitle_search_request",
     "subtitle_search_result",
     "subtitle_download_request",
@@ -287,6 +303,272 @@
             "kind"
           ]
         }
+      ]
+    },
+    "IndexerProviderProfile": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "legacy_provider_type_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint_aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IndexerProviderEndpointAlias"
+          }
+        },
+        "runtime_profile": {
+          "$ref": "#/$defs/PluginProviderProfile"
+        },
+        "provenance_url": {
+          "type": "string"
+        },
+        "reviewed_on": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "display_name",
+        "runtime_profile",
+        "provenance_url",
+        "reviewed_on"
+      ]
+    },
+    "IndexerProviderEndpointAlias": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/IndexerProviderEndpointAliasStatus"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "url",
+        "status"
+      ]
+    },
+    "IndexerProviderEndpointAliasStatus": {
+      "type": "string",
+      "enum": [
+        "compatible",
+        "invalid"
+      ]
+    },
+    "PluginProviderProfile": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "newznab"
+            },
+            "profile": {
+              "$ref": "#/$defs/PluginNewznabProfile"
+            }
+          },
+          "required": [
+            "kind",
+            "profile"
+          ]
+        }
+      ]
+    },
+    "PluginNewznabProfile": {
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "canonical_base_url": {
+          "type": "string"
+        },
+        "api_path": {
+          "type": "string"
+        },
+        "api_key_parameter": {
+          "type": "string"
+        },
+        "request_interval_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "hourly_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "daily_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "retry_default_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retry_max_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retry_max_attempts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "retry_total_budget_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "page_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "page_ceiling": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "default_request_parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "allowed_response_formats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response_attribute_mappings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginNewznabResponseAttributeMapping"
+          }
+        },
+        "quirks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scoring_policy_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "profile_id",
+        "canonical_base_url",
+        "api_path",
+        "api_key_parameter",
+        "request_interval_ms",
+        "retry_default_ms",
+        "retry_max_ms",
+        "retry_max_attempts",
+        "retry_total_budget_ms",
+        "page_size"
+      ]
+    },
+    "PluginNewznabResponseAttributeMapping": {
+      "type": "object",
+      "properties": {
+        "provider_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "canonical_field": {
+          "$ref": "#/$defs/PluginNewznabCanonicalAttribute"
+        },
+        "value_kind": {
+          "$ref": "#/$defs/PluginNewznabAttributeValueKind"
+        }
+      },
+      "required": [
+        "canonical_field",
+        "value_kind"
+      ]
+    },
+    "PluginNewznabCanonicalAttribute": {
+      "type": "string",
+      "enum": [
+        "thumbs_up",
+        "thumbs_down",
+        "languages",
+        "subtitles",
+        "grabs",
+        "password",
+        "rating",
+        "genres",
+        "comments"
+      ]
+    },
+    "PluginNewznabAttributeValueKind": {
+      "type": "string",
+      "enum": [
+        "integer",
+        "dash_separated_list",
+        "comma_separated_list",
+        "password_metadata"
+      ]
+    },
+    "IndexerStrategyPlanCapability": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_parallel_strategies": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "version",
+        "max_parallel_strategies"
       ]
     },
     "IndexerSourceKind": {
@@ -771,6 +1053,13 @@
         },
         "label": {
           "type": "string"
+        },
+        "config_overrides": {
+          "description": "Config values supplied by this option when the corresponding stored\nvalues are absent. Explicit configuration remains authoritative.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -790,6 +1079,13 @@
             "type": "string"
           }
         },
+        "provider_profiles": {
+          "description": "Provider-owned setup presets and runtime defaults. Hosts may resolve\nthese rows for configured instances, but must not supply provider facts.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IndexerProviderProfile"
+          }
+        },
         "search_semantics_version": {
           "description": "Version of the provider's search semantics. Hosts withhold convergence\ncoverage when this is absent so legacy plugins cannot attest that an\nempty or truncated response is complete.",
           "type": [
@@ -798,6 +1094,17 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "strategy_plan": {
+          "description": "Optional component capability for accepting a complete strategy tier in\none invocation. Its absence preserves the unary-search contract.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndexerStrategyPlanCapability"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "source_kind": {
           "$ref": "#/$defs/IndexerSourceKind",
@@ -7136,6 +7443,80 @@
       },
       "required": [
         "exit_code"
+      ]
+    },
+    "PluginSearchPlanRequest": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string"
+        },
+        "strategies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginSearchStrategyRequest"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "plan_id"
+      ]
+    },
+    "PluginSearchStrategyRequest": {
+      "type": "object",
+      "properties": {
+        "strategy_id": {
+          "description": "Credential-free, host-generated BLAKE3 identity of the effective request.",
+          "type": "string"
+        },
+        "labels": {
+          "description": "Diagnostic labels retained when equivalent effective requests collapse\ninto one executable strategy.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "request": {
+          "$ref": "#/$defs/PluginSearchRequest"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "request"
+      ]
+    },
+    "PluginSearchStrategyEvent": {
+      "type": "object",
+      "properties": {
+        "strategy_id": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/PluginResult"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "result"
+      ]
+    },
+    "PluginSearchPlanSummary": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string"
+        },
+        "emitted_strategy_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "plan_id"
       ]
     },
     "SubtitleSyncAlignRequest": {

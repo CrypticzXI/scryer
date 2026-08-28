@@ -779,7 +779,7 @@ const PROVIDER_TYPE_FIELDS = `
       valueSource
       role
       hostBinding
-      options { value label }
+      options { value label configOverrides { key value } }
       helpText
     }`;
 

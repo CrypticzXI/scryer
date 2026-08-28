@@ -556,6 +556,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Local movie-entity detail adds one query. In the combined release schema,
     // its payload graph also makes one existing enum reachable: query 133->134,
     // ENUM 111->112, public types 614->615.
+    // Plugin config preset overrides add one key/value payload object behind the
+    // existing config option type: OBJECT 318->319, public types 615->616.
     assert_eq!(
         query_field_count, 134,
         "query fields: {query_field_names:?}"
@@ -565,8 +567,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 14);
-    assert_eq!(public_types.len(), 615);
-    assert_eq!(kind_count("OBJECT"), 318);
+    assert_eq!(public_types.len(), 616);
+    assert_eq!(kind_count("OBJECT"), 319);
     assert_eq!(kind_count("INPUT_OBJECT"), 173);
     assert_eq!(kind_count("ENUM"), 112);
     assert_eq!(kind_count("SCALAR"), 10);

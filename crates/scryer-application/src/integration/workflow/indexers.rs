@@ -155,24 +155,50 @@ pub(crate) fn normalize_indexer_config_json(
     config_json: Option<&str>,
     persisted_config_json: Option<&str>,
 ) -> AppResult<String> {
-    indexer_connection_url_field(fields)?;
+    let connection_url_field = indexer_connection_url_field(fields)?;
+    let option_supplies_connection_url = connection_url_field.is_some_and(|connection_field| {
+        fields.iter().any(|field| {
+            field
+                .options
+                .iter()
+                .any(|option| option.config_overrides.contains_key(&connection_field.key))
+        })
+    });
 
     let mut object = parse_indexer_config_json(config_json)?;
     let persisted = parse_indexer_config_json(persisted_config_json)?;
 
     for field in fields {
-        let should_restore_persisted = match field.field_type {
-            scryer_domain::ConfigFieldType::Password => !object.contains_key(&field.key),
-            _ => !object.contains_key(&field.key),
-        };
-
-        if should_restore_persisted
+        if !object.contains_key(&field.key)
             && let Some(stored) = persisted.get(&field.key)
             && !config_value_is_empty(Some(stored))
         {
             object.insert(field.key.clone(), stored.clone());
         }
+    }
 
+    for field in fields {
+        let Some(selected_value) = object.get(&field.key).and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(selected_option) = field
+            .options
+            .iter()
+            .find(|option| option.value == selected_value)
+        else {
+            continue;
+        };
+        for (key, value) in &selected_option.config_overrides {
+            if fields.iter().any(|candidate| candidate.key == *key)
+                && config_value_is_empty(object.get(key))
+            {
+                object.insert(key.clone(), serde_json::Value::String(value.clone()));
+            }
+        }
+    }
+
+    for field in fields {
         if config_value_is_empty(object.get(&field.key))
             && let Some(default_value) = field
                 .default_value
@@ -192,6 +218,16 @@ pub(crate) fn normalize_indexer_config_json(
                 field.label.trim()
             )));
         }
+    }
+
+    if option_supplies_connection_url
+        && let Some(connection_field) = connection_url_field
+        && config_value_is_empty(object.get(&connection_field.key))
+    {
+        return Err(AppError::Validation(format!(
+            "{} is required",
+            connection_field.label.trim()
+        )));
     }
 
     serde_json::to_string(&serde_json::Value::Object(object))

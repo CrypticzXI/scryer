@@ -42,28 +42,19 @@ impl AppUseCase {
             config_json,
             persisted_config_json,
         )?;
-        let base_url = crate::app_usecase_integration::derive_indexer_base_url_from_config_fields(
-            &fields,
-            Some(&normalized_config_json),
-        )?;
-        let validated_base_url = validate_test_flight_url(&base_url)?;
-        if validated_base_url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("nzbgeek.info")
-                || host.eq_ignore_ascii_case("www.nzbgeek.info")
-        }) {
-            return Err(AppError::Validation(
-                "NZBGeek's website host cannot serve Newznab API requests; use https://api.nzbgeek.info"
-                    .to_string(),
-            ));
-        }
-        preflight_test_flight_url(&validated_base_url).await?;
-
         let provider = self
             .services
             .integrations
             .plugin_provider
             .available()
             .ok_or_else(|| AppError::Repository("indexer provider not available".into()))?;
+        provider.validate_config_for_provider(provider_type, &normalized_config_json)?;
+        let base_url = crate::app_usecase_integration::derive_indexer_base_url_from_config_fields(
+            &fields,
+            Some(&normalized_config_json),
+        )?;
+        let validated_base_url = validate_test_flight_url(&base_url)?;
+        preflight_test_flight_url(&validated_base_url).await?;
 
         let now = Utc::now();
 

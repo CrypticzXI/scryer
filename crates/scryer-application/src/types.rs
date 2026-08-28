@@ -2,17 +2,17 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::DateTime;
 use scryer_domain::{
-    CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, IndexerConfig, Title,
+    CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, IndexerConfig, TaggedAlias, Title,
     download_identity::DownloadId,
 };
 pub use scryer_domain::{TitleCredit, TitleExternalRating, TitleRatingSummary};
 use serde::{Deserialize, Serialize};
 
-use crate::SubmissionScope;
 use crate::acquisition::seed_goals::ReleaseSeedMinimums;
 use crate::library_scan::LibraryScanSummary;
 use crate::quality_profile::QualityProfileDecision;
 use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
+use crate::{AppResult, SubmissionScope};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryRootDraft {
@@ -2128,6 +2128,64 @@ pub struct IndexerSearchResponse {
     /// (empty or not), were skipped/deferred, or errored. Empty for synthetic or
     /// no-eligible-indexer responses.
     pub indexer_outcomes: Vec<IndexerQueryOutcome>,
+}
+
+/// One complete effective search strategy submitted to a plan-capable indexer.
+#[derive(Clone, Debug)]
+pub struct IndexerSearchStrategyRequest {
+    pub strategy_id: String,
+    pub labels: Vec<String>,
+    pub query: String,
+    pub ids: std::collections::HashMap<String, String>,
+    pub category: Option<String>,
+    pub facet: Option<String>,
+    pub id_search_facet: Option<String>,
+    pub newznab_categories: Option<Vec<String>>,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
+    pub absolute_episode: Option<u32>,
+    pub tagged_aliases: Vec<TaggedAlias>,
+}
+
+/// A tier of strategies that one indexer component may execute concurrently.
+#[derive(Clone, Debug)]
+pub struct IndexerSearchPlanRequest {
+    pub plan_id: String,
+    pub strategies: Vec<IndexerSearchStrategyRequest>,
+}
+
+/// A strategy result emitted while an indexer plan is still running.
+#[derive(Debug)]
+pub struct IndexerSearchStrategyEvent {
+    pub strategy_id: String,
+    pub response: AppResult<IndexerSearchResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerSearchPlanSummary {
+    pub plan_id: String,
+    pub emitted_strategy_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexerSearchPlanCapability {
+    pub version: u32,
+    pub max_parallel_strategies: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexerSearchStrategyEventSink {
+    sender: tokio::sync::mpsc::Sender<IndexerSearchStrategyEvent>,
+}
+
+impl IndexerSearchStrategyEventSink {
+    pub fn new(sender: tokio::sync::mpsc::Sender<IndexerSearchStrategyEvent>) -> Self {
+        Self { sender }
+    }
+
+    pub async fn send(&self, event: IndexerSearchStrategyEvent) -> Result<(), ()> {
+        self.sender.send(event).await.map_err(|_| ())
+    }
 }
 
 /// A persisted page made available to the scoring pipeline.

@@ -4,7 +4,8 @@ use crate::contracts::{
     ObservedClientJob,
 };
 use crate::types::{
-    ApiKeyRecord, EpisodeMediaAvailability, LoginVerificationChallengeRecord,
+    ApiKeyRecord, EpisodeMediaAvailability, IndexerSearchPlanCapability, IndexerSearchPlanRequest,
+    IndexerSearchPlanSummary, IndexerSearchStrategyEventSink, LoginVerificationChallengeRecord,
     OAuthClientRegistrationRecord, PendingReleaseObservation, PendingReleaseRole,
     TitleCatalogFilterCounts,
 };
@@ -3381,6 +3382,16 @@ pub struct ReusableIndexerSearchCandidate {
     pub normalized: NormalizedIndexerSearchCandidate,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReusableIndexerSearchStrategy {
+    pub run_id: String,
+    pub candidate_run_id: Option<String>,
+    pub query_signature: String,
+    pub branch: String,
+    pub completion_state: String,
+    pub retry_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 #[async_trait]
 pub trait IndexerSearchLearningRepository: Send + Sync {
     async fn list_for_title(
@@ -3419,6 +3430,17 @@ pub trait IndexerSearchLearningRepository: Send + Sync {
         &self,
         _run_id: &str,
     ) -> AppResult<Vec<ReusableIndexerSearchCandidate>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_reusable_search_strategies(
+        &self,
+        _indexer_id: &str,
+        _scope_key: &str,
+        _indexer_fingerprint: &str,
+        _created_after: chrono::DateTime<chrono::Utc>,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<Vec<ReusableIndexerSearchStrategy>> {
         Ok(Vec::new())
     }
 
@@ -5321,6 +5343,23 @@ pub trait PluginDescriptorLoader: Send + Sync {
 
 #[async_trait]
 pub trait IndexerClient: Send + Sync {
+    fn search_plan_capability(&self) -> Option<IndexerSearchPlanCapability> {
+        None
+    }
+
+    async fn search_plan(
+        &self,
+        _request: IndexerSearchPlanRequest,
+        _mode: SearchMode,
+        _operation: IndexerErrorOperation,
+        _cancel_token: tokio_util::sync::CancellationToken,
+        _event_sink: IndexerSearchStrategyEventSink,
+    ) -> AppResult<IndexerSearchPlanSummary> {
+        Err(AppError::Repository(
+            "indexer does not support strategy-plan search".to_string(),
+        ))
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "indexer search forwards the full caller-controlled search envelope to plugins"
@@ -5378,6 +5417,9 @@ pub trait IndexerClient: Send + Sync {
         };
         while let Some(page) = page_rx.recv().await {
             results.extend(page.results);
+        }
+        if results.is_empty() {
+            results = std::mem::take(&mut response.results);
         }
         response.results = results;
         Ok(response)
@@ -5440,6 +5482,16 @@ pub trait IndexerClient: Send + Sync {
 }
 
 pub trait IndexerPluginProvider: Send + Sync {
+    /// Validate normalized instance configuration using provider-owned
+    /// descriptor metadata. Providers without such metadata accept it.
+    fn validate_config_for_provider(
+        &self,
+        _provider_type: &str,
+        _config_json: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>>;
     fn client_for_provider_with_proxy(
         &self,

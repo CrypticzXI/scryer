@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -13,9 +13,11 @@ use scryer_application::{
     IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchCandidateWrite,
     IndexerSearchCompletion, IndexerSearchIncompleteReason, IndexerSearchLearningContext,
     IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerSearchOutcome, IndexerSearchPageSink, IndexerSearchResponse, IndexerSearchResult,
-    IndexerSearchRunWrite, IndexerStatsTracker, IndexerSystemBackoff, NewIndexerError,
-    NormalizedIndexerSearchCandidate, NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
+    IndexerSearchOutcome, IndexerSearchPageSink, IndexerSearchPlanRequest, IndexerSearchResponse,
+    IndexerSearchResult, IndexerSearchRunWrite, IndexerSearchStrategyEvent,
+    IndexerSearchStrategyEventSink, IndexerSearchStrategyRequest, IndexerStatsTracker,
+    IndexerSystemBackoff, NewIndexerError, NormalizedIndexerSearchCandidate,
+    NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
     RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
     ReusableIndexerSearchCandidate, RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest,
@@ -38,8 +40,7 @@ use scryer_outbound_http::{
     LOCAL_MANAGED_HOST_RPS_BURST, RateLimitRegistry, effective_indexer_timeout,
 };
 
-/// A single search strategy dispatched as an independent parallel task.
-/// Each strategy carries the raw query/ID params to pass through to the plugin.
+/// A single effective query within a host-built indexer strategy tier.
 #[derive(Clone, Debug)]
 struct SearchStrategy {
     request_query: String,
@@ -50,6 +51,14 @@ struct SearchStrategy {
     absolute_episode: Option<u32>,
     generic_query_only: bool,
     label: String,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedSearchStrategy {
+    strategy_id: String,
+    labels: Vec<String>,
+    request: IndexerSearchStrategyRequest,
+    title_guard_mode: TitleGuardMode,
 }
 
 #[derive(Clone, Default)]
@@ -73,6 +82,8 @@ struct SchedulerEligibleIndexer<'a> {
 
 #[derive(Debug)]
 struct StrategyExecutionOutcome {
+    strategy_id: String,
+    labels: Vec<String>,
     label: String,
     title_guard_mode: TitleGuardMode,
     response: AppResult<IndexerSearchResponse>,
@@ -82,6 +93,36 @@ struct StrategyExecutionOutcome {
     retry_after: Option<std::time::Duration>,
     rate_limited: bool,
     timed_out: bool,
+}
+
+enum StrategyTierOutcomes {
+    Legacy(tokio::task::JoinSet<StrategyExecutionOutcome>),
+    Plan(StrategyPlanOutcomeStream),
+}
+
+impl StrategyTierOutcomes {
+    async fn join_next(&mut self) -> Option<Result<StrategyExecutionOutcome, String>> {
+        match self {
+            Self::Legacy(tasks) => tasks
+                .join_next()
+                .await
+                .map(|result| result.map_err(|error| error.to_string())),
+            Self::Plan(stream) => stream.receiver.recv().await.map(Ok),
+        }
+    }
+}
+
+struct StrategyPlanOutcomeStream {
+    receiver: tokio::sync::mpsc::Receiver<StrategyExecutionOutcome>,
+    controller: tokio::task::JoinHandle<()>,
+    cancel_token: CancellationToken,
+}
+
+impl Drop for StrategyPlanOutcomeStream {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+        self.controller.abort();
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +247,144 @@ fn title_guard_mode_for_strategy(strategy: &SearchStrategy) -> TitleGuardMode {
     }
 }
 
+fn prepare_search_strategies(
+    context: &StrategyTierContext,
+    strategies: Vec<SearchStrategy>,
+) -> Vec<PreparedSearchStrategy> {
+    let mut prepared = Vec::<PreparedSearchStrategy>::new();
+    let mut by_identity = HashMap::<String, usize>::new();
+
+    for strategy in strategies {
+        let title_guard_mode = title_guard_mode_for_strategy(&strategy);
+        let category = (!strategy.generic_query_only)
+            .then(|| context.category.clone())
+            .flatten();
+        let facet = (!strategy.generic_query_only).then(|| strategy.request_facet.clone());
+        let newznab_categories = (!strategy.generic_query_only)
+            .then(|| context.per_indexer_categories.clone())
+            .flatten();
+        let season = (!strategy.generic_query_only)
+            .then_some(strategy.season)
+            .flatten();
+        let episode = (!strategy.generic_query_only)
+            .then_some(strategy.episode)
+            .flatten();
+        let absolute_episode = (!strategy.generic_query_only)
+            .then_some(strategy.absolute_episode)
+            .flatten();
+
+        let sorted_ids = strategy
+            .ids
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut sorted_categories = newznab_categories.clone().unwrap_or_default();
+        sorted_categories.sort();
+        sorted_categories.dedup();
+        let mut sorted_aliases = context.tagged_aliases.clone();
+        sorted_aliases.sort_by(|left, right| {
+            (&left.name, &left.language).cmp(&(&right.name, &right.language))
+        });
+        let strategy_id = digest_json(
+            HashDomain::IndexerQuerySignature,
+            &serde_json::json!({
+                "query": strategy.request_query,
+                "ids": sorted_ids,
+                "category": category,
+                "facet": facet,
+                "newznab_categories": sorted_categories,
+                "season": season,
+                "episode": episode,
+                "absolute_episode": absolute_episode,
+                "tagged_aliases": sorted_aliases,
+            }),
+        );
+
+        if let Some(existing) = by_identity.get(&strategy_id).copied() {
+            if !prepared[existing].labels.contains(&strategy.label) {
+                prepared[existing].labels.push(strategy.label.clone());
+                prepared[existing].request.labels.push(strategy.label);
+            }
+            continue;
+        }
+
+        let request = IndexerSearchStrategyRequest {
+            strategy_id: strategy_id.clone(),
+            labels: vec![strategy.label.clone()],
+            query: strategy.request_query,
+            ids: strategy.ids,
+            category,
+            facet,
+            id_search_facet: None,
+            newznab_categories,
+            season,
+            episode,
+            absolute_episode,
+            tagged_aliases: context.tagged_aliases.clone(),
+        };
+        by_identity.insert(strategy_id.clone(), prepared.len());
+        prepared.push(PreparedSearchStrategy {
+            strategy_id,
+            labels: vec![strategy.label],
+            request,
+            title_guard_mode,
+        });
+    }
+
+    prepared
+}
+
+struct ReusableStrategySelection {
+    live: Vec<PreparedSearchStrategy>,
+    complete_count: usize,
+    deferred_count: usize,
+    replayed_result_count: usize,
+}
+
+async fn select_reusable_strategies(
+    strategies: Vec<PreparedSearchStrategy>,
+    reusable: &mut HashMap<String, ReusableStrategyState>,
+    indexer_id: &str,
+    page_sink: &IndexerSearchPageSink,
+) -> AppResult<ReusableStrategySelection> {
+    let now = Utc::now();
+    let mut selection = ReusableStrategySelection {
+        live: Vec::new(),
+        complete_count: 0,
+        deferred_count: 0,
+        replayed_result_count: 0,
+    };
+
+    for strategy in strategies {
+        let Some(mut state) = reusable.remove(&strategy.strategy_id) else {
+            selection.live.push(strategy);
+            continue;
+        };
+        selection.replayed_result_count = selection
+            .replayed_result_count
+            .saturating_add(state.candidates.len());
+        for result in &mut state.candidates {
+            result.indexer_id = Some(indexer_id.to_string());
+        }
+        if !state.candidates.is_empty() {
+            page_sink
+                .send(state.candidates)
+                .await
+                .map_err(|_| AppError::canceled("indexer scoring pipeline closed"))?;
+        }
+
+        match state.completion_state.as_str() {
+            "complete" => selection.complete_count += 1,
+            "deferred" if state.retry_at.is_some_and(|retry_at| retry_at > now) => {
+                selection.deferred_count += 1;
+            }
+            _ => selection.live.push(strategy),
+        }
+    }
+
+    Ok(selection)
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct ManagedIndexerMetadata {
     enable_rss: Option<bool>,
@@ -290,6 +469,22 @@ impl Drop for SearchDiagnosticCleanupGuard {
     }
 }
 
+struct ReusableStrategyState {
+    completion_state: String,
+    retry_at: Option<DateTime<Utc>>,
+    candidates: Vec<IndexerSearchResult>,
+}
+
+fn reusable_strategy_provenance(branch: &str) -> ReleaseCandidateProvenance {
+    let labels = branch.split('|').filter(|label| !label.is_empty());
+    let primary_label = labels.clone().next().unwrap_or("fallback");
+    ReleaseCandidateProvenance {
+        search_subject_kind: ReleaseSearchSubjectKind::Freetext,
+        strategy_kind: scryer_application::release_strategy_kind_for_label(primary_label, false),
+        title_validated_upstream: labels.into_iter().any(|label| label.starts_with("ids")),
+    }
+}
+
 #[derive(Clone)]
 struct SearchDiagnosticsContext {
     repository: Arc<dyn IndexerSearchLearningRepository>,
@@ -297,26 +492,16 @@ struct SearchDiagnosticsContext {
     provider_type: String,
     search_session_id: String,
     scope_key: String,
-    query_signature: String,
     indexer_fingerprint: String,
     credentials: HashMap<String, String>,
 }
 
 impl SearchDiagnosticsContext {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the diagnostic identity mirrors the complete indexer search envelope"
-    )]
     fn new(
         repository: Arc<dyn IndexerSearchLearningRepository>,
         config: &IndexerConfig,
         search_semantics_version: Option<u32>,
         learning_context: Option<&IndexerSearchLearningContext>,
-        query: &str,
-        ids: &HashMap<String, String>,
-        category: Option<&str>,
-        facet: &str,
-        id_search_facet: &str,
         season: Option<u32>,
         episode: Option<u32>,
         absolute_episode: Option<u32>,
@@ -337,19 +522,6 @@ impl SearchDiagnosticsContext {
             episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
             absolute_episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
         );
-        let query_signature = digest_json(
-            HashDomain::IndexerQuerySignature,
-            &serde_json::json!({
-                "query": query,
-                "ids": ids,
-                "category": category,
-                "facet": facet,
-                "id_search_facet": id_search_facet,
-                "season": season,
-                "episode": episode,
-                "absolute_episode": absolute_episode,
-            }),
-        );
         let indexer_fingerprint = digest_json(
             HashDomain::IndexerSearchIdentity,
             &indexer_search_identity(config, search_semantics_version),
@@ -361,7 +533,6 @@ impl SearchDiagnosticsContext {
             provider_type: config.provider_type.clone(),
             search_session_id: learning_context.search_session_id.clone(),
             scope_key,
-            query_signature,
             indexer_fingerprint,
             credentials: indexer_credentials(config),
         })
@@ -369,6 +540,7 @@ impl SearchDiagnosticsContext {
 
     async fn persist_response(
         &self,
+        query_signature: &str,
         branch: &str,
         raw_result_count: usize,
         response: &IndexerSearchResponse,
@@ -391,7 +563,7 @@ impl SearchDiagnosticsContext {
                 search_session_id: self.search_session_id.clone(),
                 indexer_id: self.indexer_id.clone(),
                 scope_key: self.scope_key.clone(),
-                query_signature: self.query_signature.clone(),
+                query_signature: query_signature.to_string(),
                 session_identity_hash: candidate_session_identity_hash(candidate),
                 normalized: normalized_candidate(candidate, &self.credentials),
                 created_at: now,
@@ -405,7 +577,7 @@ impl SearchDiagnosticsContext {
             provider_type: self.provider_type.clone(),
             search_session_id: self.search_session_id.clone(),
             scope_key: self.scope_key.clone(),
-            query_signature: self.query_signature.clone(),
+            query_signature: query_signature.to_string(),
             branch: branch.to_string(),
             page: None,
             range_min_size: None,
@@ -433,12 +605,13 @@ impl SearchDiagnosticsContext {
 
     async fn record_response(
         &self,
+        query_signature: &str,
         branch: &str,
         raw_result_count: usize,
         response: &IndexerSearchResponse,
     ) {
         if let Err(error) = self
-            .persist_response(branch, raw_result_count, response)
+            .persist_response(query_signature, branch, raw_result_count, response)
             .await
         {
             warn!(
@@ -451,6 +624,7 @@ impl SearchDiagnosticsContext {
 
     async fn record_error(
         &self,
+        query_signature: &str,
         branch: &str,
         error: &AppError,
         retry_after: Option<std::time::Duration>,
@@ -462,7 +636,7 @@ impl SearchDiagnosticsContext {
             provider_type: self.provider_type.clone(),
             search_session_id: self.search_session_id.clone(),
             scope_key: self.scope_key.clone(),
-            query_signature: self.query_signature.clone(),
+            query_signature: query_signature.to_string(),
             branch: branch.to_string(),
             page: None,
             range_min_size: None,
@@ -483,43 +657,65 @@ impl SearchDiagnosticsContext {
         self.persist(&run, &[]).await;
     }
 
-    async fn reusable_candidates(&self, config: &IndexerConfig) -> Vec<IndexerSearchResult> {
-        const REUSE_LIMIT: u32 = 200;
-        let records = match self
+    async fn reusable_strategies(
+        &self,
+        config: &IndexerConfig,
+    ) -> HashMap<String, ReusableStrategyState> {
+        let now = Utc::now();
+        let created_after = now - Duration::hours(SEARCH_CANDIDATE_REUSE_HOURS);
+        let states = match self
             .repository
-            .list_reusable_search_candidates(
+            .list_reusable_search_strategies(
                 &self.indexer_id,
                 &self.scope_key,
                 &self.indexer_fingerprint,
-                Utc::now(),
-                REUSE_LIMIT,
+                created_after,
+                now,
             )
             .await
         {
-            Ok(records) => records,
+            Ok(states) => states,
             Err(error) => {
                 warn!(
                     indexer_id = self.indexer_id.as_str(),
                     error = %error,
-                    "failed to load reusable indexer candidates"
+                    "failed to load reusable indexer strategy state"
                 );
-                return Vec::new();
+                return HashMap::new();
             }
         };
 
-        let mut seen = HashSet::new();
-        records
-            .into_iter()
-            .filter_map(|record| reusable_candidate_from_record(record, config, &self.credentials))
-            .filter(|candidate| {
-                seen.insert(format!(
-                    "{}:{}:{}",
-                    candidate.guid.as_deref().unwrap_or_default(),
-                    candidate.title.trim().to_ascii_lowercase(),
-                    candidate.size_bytes.unwrap_or_default(),
-                ))
-            })
-            .collect()
+        let mut reusable = HashMap::with_capacity(states.len());
+        for state in states {
+            let mut candidates = match state.candidate_run_id.as_deref() {
+                Some(run_id) => match self.persisted_candidates(run_id, config).await {
+                    Ok(candidates) => candidates,
+                    Err(error) => {
+                        warn!(
+                            indexer_id = self.indexer_id.as_str(),
+                            query_signature = state.query_signature.as_str(),
+                            error = %error,
+                            "failed to rehydrate reusable indexer strategy candidates"
+                        );
+                        continue;
+                    }
+                },
+                None => Vec::new(),
+            };
+            let provenance = reusable_strategy_provenance(&state.branch);
+            for candidate in &mut candidates {
+                candidate.provenance = Some(provenance.clone());
+            }
+            reusable.insert(
+                state.query_signature,
+                ReusableStrategyState {
+                    completion_state: state.completion_state,
+                    retry_at: state.retry_at,
+                    candidates,
+                },
+            );
+        }
+        reusable
     }
 
     async fn persist(
@@ -1142,7 +1338,7 @@ fn stable_phase_seconds(key: &str, interval_seconds: u64) -> u64 {
 
 fn should_run_fallback_tier(
     mode: SearchMode,
-    collected_results: &[IndexerSearchResult],
+    primary_usable_result_count: usize,
     primary_attempted: bool,
     primary_had_error: bool,
     fallback_strategies: &[SearchStrategy],
@@ -1151,7 +1347,7 @@ fn should_run_fallback_tier(
         return false;
     }
 
-    collected_results.is_empty() && primary_attempted && !fallback_strategies.is_empty()
+    primary_usable_result_count == 0 && primary_attempted && !fallback_strategies.is_empty()
 }
 
 fn rate_limit_signal_from_error(error: &AppError) -> Option<RateLimitSignal> {
@@ -2546,9 +2742,9 @@ impl MultiIndexerSearchClient {
         format!("{indexer_id}:{}", Self::rss_request_key(categories))
     }
 
-    fn execute_strategy_tier(
+    fn execute_legacy_strategy_tier(
         context: StrategyTierContext,
-        strategies: Vec<SearchStrategy>,
+        strategies: Vec<PreparedSearchStrategy>,
         initial_permit: Option<OwnedSemaphorePermit>,
         page_sink: IndexerSearchPageSink,
     ) -> tokio::task::JoinSet<StrategyExecutionOutcome> {
@@ -2562,8 +2758,11 @@ impl MultiIndexerSearchClient {
             } else {
                 None
             };
-            let strategy_label = strategy.label.clone();
-            let title_guard_mode = title_guard_mode_for_strategy(&strategy);
+            let strategy_id = strategy.strategy_id.clone();
+            let strategy_labels = strategy.labels.clone();
+            let strategy_label = strategy.labels.first().cloned().unwrap_or_default();
+            let title_guard_mode = strategy.title_guard_mode;
+            let strategy = strategy.request;
             let page_sink = page_sink.clone();
 
             set.spawn(async move {
@@ -2574,11 +2773,11 @@ impl MultiIndexerSearchClient {
                     indexer_id,
                     search_timeout,
                     rate_limit_seconds,
-                    category,
-                    per_indexer_categories,
+                    category: _,
+                    per_indexer_categories: _,
                     mode,
                     operation,
-                    tagged_aliases,
+                    tagged_aliases: _,
                     cancel_token,
                     deadline_at,
                 } = context;
@@ -2598,6 +2797,8 @@ impl MultiIndexerSearchClient {
                             Ok(()) => {}
                             Err(SearchWindowError::Cancelled) => {
                                 return StrategyExecutionOutcome {
+                                    strategy_id: strategy_id.clone(),
+                                    labels: strategy_labels.clone(),
                                     label: strategy_label,
                                     title_guard_mode,
                                     request_fired: false,
@@ -2611,6 +2812,8 @@ impl MultiIndexerSearchClient {
                             }
                             Err(SearchWindowError::DeadlineExpired) => {
                                 return StrategyExecutionOutcome {
+                                    strategy_id: strategy_id.clone(),
+                                    labels: strategy_labels.clone(),
                                     label: strategy_label,
                                     title_guard_mode,
                                     request_fired: false,
@@ -2625,37 +2828,6 @@ impl MultiIndexerSearchClient {
                                 };
                             }
                         }
-                        let page_reservation = tokio::select! {
-                            _ = cancel_token.cancelled() => {
-                                return StrategyExecutionOutcome {
-                                    label: strategy_label,
-                                    title_guard_mode,
-                                    request_fired: false,
-                                    response: Err(AppError::canceled("indexer strategy canceled")),
-                                    page_reservation: None,
-                                    elapsed: std::time::Duration::ZERO,
-                                    retry_after: None,
-                                    rate_limited: false,
-                                    timed_out: false,
-                                };
-                            }
-                            reservation = page_sink.reserve() => reservation,
-                        };
-                        let Some(page_reservation) = page_reservation else {
-                            return StrategyExecutionOutcome {
-                                label: strategy_label,
-                                title_guard_mode,
-                                request_fired: false,
-                                response: Err(AppError::canceled(
-                                    "indexer scoring pipeline closed",
-                                )),
-                                page_reservation: None,
-                                elapsed: std::time::Duration::ZERO,
-                                retry_after: None,
-                                rate_limited: false,
-                                timed_out: false,
-                            };
-                        };
                         let start = std::time::Instant::now();
                         let request_cancel_token = cancel_token.child_token();
                         let request_deadline =
@@ -2666,43 +2838,19 @@ impl MultiIndexerSearchClient {
                                 request_fired = true;
                                 client
                                     .search(
-                                        strategy.request_query,
+                                        strategy.query,
                                         strategy.ids,
-                                        if strategy.generic_query_only {
-                                            None
-                                        } else {
-                                            category
-                                        },
-                                        if strategy.generic_query_only {
-                                            None
-                                        } else {
-                                            Some(strategy.request_facet)
-                                        },
-                                        None,
-                                        if strategy.generic_query_only {
-                                            None
-                                        } else {
-                                            per_indexer_categories
-                                        },
+                                        strategy.category,
+                                        strategy.facet,
+                                        strategy.id_search_facet,
+                                        strategy.newznab_categories,
                                         None,
                                         mode,
                                         operation,
-                                        if strategy.generic_query_only {
-                                            None
-                                        } else {
-                                            strategy.season
-                                        },
-                                        if strategy.generic_query_only {
-                                            None
-                                        } else {
-                                            strategy.episode
-                                        },
-                                        if strategy.generic_query_only {
-                                            None
-                                        } else {
-                                            strategy.absolute_episode
-                                        },
-                                        tagged_aliases,
+                                        strategy.season,
+                                        strategy.episode,
+                                        strategy.absolute_episode,
+                                        strategy.tagged_aliases,
                                         None,
                                         request_cancel_token,
                                     )
@@ -2730,13 +2878,60 @@ impl MultiIndexerSearchClient {
                             .as_ref()
                             .and_then(|signal| signal.retry_after);
                         let rate_limited = rate_limit_signal.is_some();
+                        let page_reservation = if response
+                            .as_ref()
+                            .is_ok_and(|response| !response.results.is_empty())
+                        {
+                            let reservation = tokio::select! {
+                                _ = cancel_token.cancelled() => {
+                                    return StrategyExecutionOutcome {
+                                        strategy_id,
+                                        labels: strategy_labels,
+                                        label: strategy_label,
+                                        title_guard_mode,
+                                        request_fired,
+                                        response: Err(AppError::canceled(
+                                            "indexer strategy canceled",
+                                        )),
+                                        page_reservation: None,
+                                        elapsed: start.elapsed(),
+                                        retry_after: None,
+                                        rate_limited: false,
+                                        timed_out: false,
+                                    };
+                                }
+                                reservation = page_sink.reserve() => reservation,
+                            };
+                            let Some(reservation) = reservation else {
+                                return StrategyExecutionOutcome {
+                                    strategy_id,
+                                    labels: strategy_labels,
+                                    label: strategy_label,
+                                    title_guard_mode,
+                                    request_fired,
+                                    response: Err(AppError::canceled(
+                                        "indexer scoring pipeline closed",
+                                    )),
+                                    page_reservation: None,
+                                    elapsed: start.elapsed(),
+                                    retry_after: None,
+                                    rate_limited: false,
+                                    timed_out: false,
+                                };
+                            };
+                            Some(reservation)
+                        } else {
+                            None
+                        };
 
                         return StrategyExecutionOutcome {
+                            strategy_id: strategy_id.clone(),
+                            labels: strategy_labels.clone(),
                             label: strategy_label,
                             title_guard_mode,
                             request_fired,
                             response,
-                            page_reservation: Some(page_reservation),
+                            page_reservation,
                             elapsed: start.elapsed(),
                             retry_after,
                             rate_limited,
@@ -2755,6 +2950,8 @@ impl MultiIndexerSearchClient {
                 };
 
                 StrategyExecutionOutcome {
+                    strategy_id,
+                    labels: strategy_labels,
                     label: strategy_label,
                     title_guard_mode,
                     request_fired: false,
@@ -2769,6 +2966,327 @@ impl MultiIndexerSearchClient {
         }
 
         set
+    }
+
+    fn execute_strategy_tier(
+        context: StrategyTierContext,
+        strategies: Vec<PreparedSearchStrategy>,
+        initial_permit: Option<OwnedSemaphorePermit>,
+        page_sink: IndexerSearchPageSink,
+    ) -> StrategyTierOutcomes {
+        if context
+            .client
+            .search_plan_capability()
+            .is_some_and(|capability| capability.version == 1)
+        {
+            Self::execute_plan_strategy_tier(context, strategies, initial_permit, page_sink)
+        } else {
+            StrategyTierOutcomes::Legacy(Self::execute_legacy_strategy_tier(
+                context,
+                strategies,
+                initial_permit,
+                page_sink,
+            ))
+        }
+    }
+
+    fn execute_plan_strategy_tier(
+        context: StrategyTierContext,
+        strategies: Vec<PreparedSearchStrategy>,
+        initial_permit: Option<OwnedSemaphorePermit>,
+        page_sink: IndexerSearchPageSink,
+    ) -> StrategyTierOutcomes {
+        let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel(16);
+        let plan_cancel_token = context.cancel_token.child_token();
+        let cancel_on_drop = plan_cancel_token.clone();
+        let controller = tokio::spawn(async move {
+            let plan_id = uuid::Uuid::new_v4().to_string();
+            let mut expected = strategies
+                .iter()
+                .map(|strategy| (strategy.strategy_id.clone(), strategy.clone()))
+                .collect::<HashMap<_, _>>();
+            let requests = strategies
+                .iter()
+                .map(|strategy| strategy.request.clone())
+                .collect();
+
+            let permit = match initial_permit {
+                Some(permit) => Ok(permit),
+                None => {
+                    acquire_search_permit(
+                        context.search_limit.clone(),
+                        &plan_cancel_token,
+                        context.deadline_at,
+                    )
+                    .await
+                }
+            };
+            let permit = match permit {
+                Ok(permit) => permit,
+                Err(error) => {
+                    let timed_out = matches!(error, SearchPermitError::DeadlineExpired);
+                    let message = match error {
+                        SearchPermitError::Cancelled => {
+                            "indexer strategy plan canceled".to_string()
+                        }
+                        SearchPermitError::DeadlineExpired => {
+                            "indexer search timed out before plan dispatch".to_string()
+                        }
+                        SearchPermitError::Closed(error) => {
+                            format!("indexer search limiter closed: {error}")
+                        }
+                    };
+                    for strategy in expected.into_values() {
+                        if outcome_tx
+                            .send(StrategyExecutionOutcome {
+                                strategy_id: strategy.strategy_id,
+                                label: strategy.labels.first().cloned().unwrap_or_default(),
+                                labels: strategy.labels,
+                                title_guard_mode: strategy.title_guard_mode,
+                                response: Err(AppError::Repository(message.clone())),
+                                page_reservation: None,
+                                request_fired: false,
+                                elapsed: std::time::Duration::ZERO,
+                                retry_after: None,
+                                rate_limited: false,
+                                timed_out,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            plan_cancel_token.cancel();
+                            break;
+                        }
+                    }
+                    return;
+                }
+            };
+
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+            let event_sink = IndexerSearchStrategyEventSink::new(event_tx);
+            let request = IndexerSearchPlanRequest {
+                plan_id: plan_id.clone(),
+                strategies: requests,
+            };
+            let client = context.client.clone();
+            let operation = context.operation;
+            let mode = context.mode;
+            let request_cancel = plan_cancel_token.child_token();
+            let request_deadline =
+                effective_request_deadline(context.search_timeout, context.deadline_at);
+            let request_window_cancel = plan_cancel_token.clone();
+            let started_at = std::time::Instant::now();
+            let invocation = tokio::spawn(async move {
+                let _permit = permit;
+                match within_search_window(
+                    client.search_plan(request, mode, operation, request_cancel, event_sink),
+                    &request_window_cancel,
+                    Some(request_deadline),
+                )
+                .await
+                {
+                    Ok(result) => (result, false),
+                    Err(SearchWindowError::Cancelled) => (
+                        Err(AppError::canceled("indexer strategy plan canceled")),
+                        false,
+                    ),
+                    Err(SearchWindowError::DeadlineExpired) => (
+                        Err(AppError::Repository("indexer search plan timed out".into())),
+                        true,
+                    ),
+                }
+            });
+
+            let mut invocation = Some(invocation);
+            let mut invocation_result = None;
+            let mut emitted = HashSet::new();
+            let mut protocol_error = None::<String>;
+            while invocation.is_some() || !event_rx.is_closed() || !event_rx.is_empty() {
+                tokio::select! {
+                    event = event_rx.recv(), if !event_rx.is_closed() || !event_rx.is_empty() => {
+                        let Some(IndexerSearchStrategyEvent { strategy_id, response }) = event else {
+                            continue;
+                        };
+                        let Some(strategy) = expected.get(&strategy_id).cloned() else {
+                            protocol_error = Some(format!("indexer strategy plan emitted unknown strategy {strategy_id}"));
+                            continue;
+                        };
+                        if !emitted.insert(strategy_id.clone()) {
+                            protocol_error = Some(format!("indexer strategy plan emitted duplicate strategy {strategy_id}"));
+                            continue;
+                        }
+                        let rate_limit_signal = response
+                            .as_ref()
+                            .err()
+                            .and_then(rate_limit_signal_from_error);
+                        let retry_after = rate_limit_signal
+                            .as_ref()
+                            .and_then(|signal| signal.retry_after);
+                        let page_reservation = if response
+                            .as_ref()
+                            .is_ok_and(|response| !response.results.is_empty())
+                        {
+                            tokio::select! {
+                                _ = plan_cancel_token.cancelled() => None,
+                                reservation = page_sink.reserve() => reservation,
+                            }
+                        } else {
+                            None
+                        };
+                        if outcome_tx
+                            .send(StrategyExecutionOutcome {
+                                strategy_id,
+                                label: strategy.labels.first().cloned().unwrap_or_default(),
+                                labels: strategy.labels,
+                                title_guard_mode: strategy.title_guard_mode,
+                                request_fired: true,
+                                response,
+                                page_reservation,
+                                elapsed: started_at.elapsed(),
+                                retry_after,
+                                rate_limited: rate_limit_signal.is_some(),
+                                timed_out: false,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            plan_cancel_token.cancel();
+                            break;
+                        }
+                    }
+                    joined = async { invocation.as_mut().expect("guarded invocation").await }, if invocation.is_some() => {
+                        invocation_result = Some(match joined {
+                            Ok(result) => result,
+                            Err(error) => (
+                                Err(AppError::Repository(format!("indexer strategy plan task failed: {error}"))),
+                                false,
+                            ),
+                        });
+                        invocation = None;
+                    }
+                }
+                if invocation.is_none() && event_rx.is_empty() {
+                    break;
+                }
+            }
+
+            let (summary, timed_out) = invocation_result.unwrap_or_else(|| {
+                (
+                    Err(AppError::Repository(
+                        "indexer strategy plan ended without a summary".to_string(),
+                    )),
+                    false,
+                )
+            });
+            let invocation_error = match summary {
+                Ok(summary) => {
+                    if summary.plan_id != plan_id {
+                        protocol_error =
+                            Some("indexer strategy plan summary ID mismatch".to_string());
+                    }
+                    let summary_id_count = summary.emitted_strategy_ids.len();
+                    let summary_ids = summary
+                        .emitted_strategy_ids
+                        .into_iter()
+                        .collect::<HashSet<_>>();
+                    if summary_ids.len() != summary_id_count || summary_ids != emitted {
+                        protocol_error = Some(
+                            "indexer strategy plan summary did not match emitted events"
+                                .to_string(),
+                        );
+                    } else if emitted.len() != expected.len()
+                        || expected
+                            .keys()
+                            .any(|strategy_id| !emitted.contains(strategy_id))
+                    {
+                        protocol_error =
+                            Some("indexer strategy plan omitted a submitted strategy".to_string());
+                    }
+                    None
+                }
+                Err(error) => Some(error.to_string()),
+            };
+
+            if let Some(error) = protocol_error.as_deref() {
+                if outcome_tx
+                    .send(StrategyExecutionOutcome {
+                        strategy_id: format!("protocol:{plan_id}"),
+                        label: "protocol".to_string(),
+                        labels: vec!["protocol".to_string()],
+                        title_guard_mode: TitleGuardMode::SkipTitleMatch,
+                        response: Err(AppError::Repository(error.to_string())),
+                        page_reservation: None,
+                        request_fired: true,
+                        elapsed: started_at.elapsed(),
+                        retry_after: None,
+                        rate_limited: false,
+                        timed_out,
+                    })
+                    .await
+                    .is_err()
+                {
+                    plan_cancel_token.cancel();
+                    return;
+                }
+                for strategy in expected.values() {
+                    if outcome_tx
+                        .send(StrategyExecutionOutcome {
+                            strategy_id: strategy.strategy_id.clone(),
+                            label: strategy.labels.first().cloned().unwrap_or_default(),
+                            labels: strategy.labels.clone(),
+                            title_guard_mode: strategy.title_guard_mode,
+                            response: Err(AppError::Repository(error.to_string())),
+                            page_reservation: None,
+                            request_fired: true,
+                            elapsed: started_at.elapsed(),
+                            retry_after: None,
+                            rate_limited: false,
+                            timed_out,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        plan_cancel_token.cancel();
+                        return;
+                    }
+                }
+            } else {
+                for strategy_id in &emitted {
+                    expected.remove(strategy_id);
+                }
+                let missing_error = invocation_error
+                    .as_deref()
+                    .unwrap_or("indexer strategy plan omitted a strategy result");
+                for strategy in expected.into_values() {
+                    if outcome_tx
+                        .send(StrategyExecutionOutcome {
+                            strategy_id: strategy.strategy_id,
+                            label: strategy.labels.first().cloned().unwrap_or_default(),
+                            labels: strategy.labels,
+                            title_guard_mode: strategy.title_guard_mode,
+                            response: Err(AppError::Repository(missing_error.to_string())),
+                            page_reservation: None,
+                            request_fired: true,
+                            elapsed: started_at.elapsed(),
+                            retry_after: None,
+                            rate_limited: false,
+                            timed_out,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        plan_cancel_token.cancel();
+                        return;
+                    }
+                }
+            }
+        });
+
+        StrategyTierOutcomes::Plan(StrategyPlanOutcomeStream {
+            receiver: outcome_rx,
+            controller,
+            cancel_token: cancel_on_drop,
+        })
     }
 }
 
@@ -3223,50 +3741,51 @@ impl IndexerClient for MultiIndexerSearchClient {
             let had_persisted_system_backoff = dispatch.had_persisted_system_backoff;
             let request_categories = dispatch.category_request.clone();
             let rss_request_key = dispatch.rss_request_key.clone();
-            let scheduler_lease = match scheduler_admission {
-                SchedulerAdmission::Admit { reason, lease, .. } => {
-                    debug!(
-                        indexer = config.name.as_str(),
-                        scheduler_reason = ?reason,
-                        "scheduler admitted indexer search candidate"
-                    );
-                    Some(lease)
-                }
-                SchedulerAdmission::Defer {
-                    reason,
-                    retry_after,
-                    ..
-                } => {
-                    info!(
-                        indexer = config.name.as_str(),
-                        scheduler_reason = ?reason,
-                        retry_after_secs = retry_after.map(|delay| delay.as_secs()),
-                        "scheduler deferred indexer search candidate"
-                    );
-                    indexer_outcomes.push(IndexerQueryOutcome {
-                        indexer_id: config.id.clone(),
-                        outcome: IndexerSearchOutcome::Deferred { retry_after },
-                    });
-                    continue;
-                }
-                SchedulerAdmission::Skip {
-                    reason,
-                    retry_after,
-                    ..
-                } => {
-                    info!(
-                        indexer = config.name.as_str(),
-                        scheduler_reason = ?reason,
-                        retry_after_secs = retry_after.map(|delay| delay.as_secs()),
-                        "scheduler skipped indexer search candidate"
-                    );
-                    indexer_outcomes.push(IndexerQueryOutcome {
-                        indexer_id: config.id.clone(),
-                        outcome: IndexerSearchOutcome::Skipped { retry_after },
-                    });
-                    continue;
-                }
-            };
+            let (scheduler_lease, scheduler_blocked_outcome, scheduler_retry_after) =
+                match scheduler_admission {
+                    SchedulerAdmission::Admit { reason, lease, .. } => {
+                        debug!(
+                            indexer = config.name.as_str(),
+                            scheduler_reason = ?reason,
+                            "scheduler admitted indexer search candidate"
+                        );
+                        (Some(lease), None, None)
+                    }
+                    SchedulerAdmission::Defer {
+                        reason,
+                        retry_after,
+                        ..
+                    } => {
+                        info!(
+                            indexer = config.name.as_str(),
+                            scheduler_reason = ?reason,
+                            retry_after_secs = retry_after.map(|delay| delay.as_secs()),
+                            "scheduler deferred indexer search candidate"
+                        );
+                        (
+                            None,
+                            Some(IndexerSearchOutcome::Deferred { retry_after }),
+                            retry_after,
+                        )
+                    }
+                    SchedulerAdmission::Skip {
+                        reason,
+                        retry_after,
+                        ..
+                    } => {
+                        info!(
+                            indexer = config.name.as_str(),
+                            scheduler_reason = ?reason,
+                            retry_after_secs = retry_after.map(|delay| delay.as_secs()),
+                            "scheduler skipped indexer search candidate"
+                        );
+                        (
+                            None,
+                            Some(IndexerSearchOutcome::Skipped { retry_after }),
+                            retry_after,
+                        )
+                    }
+                };
 
             let static_caps = self
                 .plugin_provider
@@ -3360,6 +3879,13 @@ impl IndexerClient for MultiIndexerSearchClient {
             // results for all concurrent callers. The feed content is the same
             // regardless of query — the caller matches results downstream.
             let is_rss_only = !caps.supports_any_search() && caps.rss;
+            if is_rss_only && let Some(outcome) = scheduler_blocked_outcome {
+                indexer_outcomes.push(IndexerQueryOutcome {
+                    indexer_id: config.id.clone(),
+                    outcome,
+                });
+                continue;
+            }
             if is_rss_only {
                 let rss_category_request = request_categories.clone();
                 let rss_cache_key = rss_request_key
@@ -3784,59 +4310,23 @@ impl IndexerClient for MultiIndexerSearchClient {
                 );
             }
 
-            let initial_permit =
-                match acquire_search_permit(search_limit.clone(), &cancel_token, deadline_at).await
-                {
-                    Ok(permit) => permit,
-                    Err(SearchPermitError::Cancelled) => {
-                        set.abort_all();
-                        while set.join_next().await.is_some() {}
-                        self.rss_feed_cache.lock().await.clear();
-                        return Err(AppError::canceled("indexer search canceled while queued"));
-                    }
-                    Err(SearchPermitError::DeadlineExpired) => {
-                        debug!(
-                            indexer = config.name.as_str(),
-                            "skipping indexer: candidate deadline expired while queued"
-                        );
-                        indexer_outcomes.push(IndexerQueryOutcome {
-                            indexer_id: config.id.clone(),
-                            outcome: IndexerSearchOutcome::Skipped { retry_after: None },
-                        });
-                        continue;
-                    }
-                    Err(SearchPermitError::Closed(error)) => {
-                        set.abort_all();
-                        while set.join_next().await.is_some() {}
-                        self.rss_feed_cache.lock().await.clear();
-                        return Err(AppError::Repository(format!(
-                            "indexer search concurrency limiter closed: {error}"
-                        )));
-                    }
-                };
-
             let search_diagnostics = SearchDiagnosticsContext::new(
                 self.search_learning.clone(),
                 config,
                 self.plugin_provider
                     .search_semantics_version_for_provider(&config.provider_type),
                 learning_context.as_ref(),
-                &query,
-                &available_ids,
-                category.as_deref(),
-                &facet,
-                &id_search_facet,
                 season,
                 episode,
                 absolute_episode,
             );
-            let reusable_results = if mode == SearchMode::Auto {
+            let reusable_strategies = if mode == SearchMode::Auto {
                 match search_diagnostics.as_ref() {
-                    Some(diagnostics) => diagnostics.reusable_candidates(config).await,
-                    None => Vec::new(),
+                    Some(diagnostics) => diagnostics.reusable_strategies(config).await,
+                    None => HashMap::new(),
                 }
             } else {
-                Vec::new()
+                HashMap::new()
             };
             let rss_category_request = request_categories.clone();
             let indexer_id = config.id.clone();
@@ -3860,6 +4350,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             let persisted_config = config.clone();
             let task_cancel_token = cancel_token.child_token();
             let scheduler_lease_for_task = scheduler_lease.clone();
+            let live_search_admitted = scheduler_lease_for_task.is_some();
             let page_sink = Some(page_sink.clone());
 
             set.spawn(async move {
@@ -3873,25 +4364,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                     );
                 }
                 let mut collected_results = Vec::new();
-                if let Some(page_sink) = page_sink.as_ref() {
-                    if !reusable_results.is_empty()
-                        && page_sink.send(reusable_results).await.is_err()
-                    {
-                        return (
-                            indexer_id,
-                            indexer_name,
-                            scheduler_lease_for_task.clone(),
-                            Err(AppError::canceled("indexer scoring pipeline closed")),
-                            false,
-                        );
-                    }
-                } else {
-                    collected_results = reusable_results;
-                }
+                let mut reusable_strategies = reusable_strategies;
                 let mut any_strategy_fired = false;
                 let mut all_strategies_complete = true;
-                let mut primary_attempted = false;
-                let mut primary_had_error = false;
+                let mut primary_attempted;
+                let mut primary_had_error;
+                let mut primary_usable_result_count = 0_usize;
                 let mut batch_had_timeout = false;
                 let mut batch_health = StrategyBatchHealth::default();
                 let mut quota_observation = IndexerQuotaObservation::default();
@@ -3911,17 +4389,58 @@ impl IndexerClient for MultiIndexerSearchClient {
                         cancel_token: task_cancel_token.child_token(),
                         deadline_at,
                     };
-                let mut primary_outcomes = Self::execute_strategy_tier(
-                    primary_context,
+                let primary_strategies = prepare_search_strategies(
+                    &primary_context,
                     primary_strategies,
-                    Some(initial_permit),
-                    page_sink.as_ref().expect("stream sink is present").clone(),
                 );
+                let primary_selection = match select_reusable_strategies(
+                    primary_strategies,
+                    &mut reusable_strategies,
+                    &indexer_id,
+                    page_sink.as_ref().expect("stream sink is present"),
+                )
+                .await
+                {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        return (
+                            indexer_id,
+                            indexer_name,
+                            scheduler_lease_for_task.clone(),
+                            Err(error),
+                            false,
+                        );
+                    }
+                };
+                primary_attempted = primary_selection.complete_count > 0
+                    || primary_selection.deferred_count > 0
+                    || !primary_selection.live.is_empty();
+                primary_had_error = primary_selection.deferred_count > 0;
+                all_strategies_complete &= primary_selection.deferred_count == 0;
+                primary_usable_result_count = primary_usable_result_count
+                    .saturating_add(primary_selection.replayed_result_count);
+                let primary_live = primary_selection.live;
+                let mut primary_outcomes = if primary_live.is_empty() {
+                    StrategyTierOutcomes::Legacy(tokio::task::JoinSet::new())
+                } else if live_search_admitted {
+                    Self::execute_strategy_tier(
+                        primary_context,
+                        primary_live,
+                        None,
+                        page_sink.as_ref().expect("stream sink is present").clone(),
+                    )
+                } else {
+                    primary_had_error = true;
+                    all_strategies_complete = false;
+                    StrategyTierOutcomes::Legacy(tokio::task::JoinSet::new())
+                };
 
                 while let Some(join_result) = primary_outcomes.join_next().await {
                     let mut outcome = match join_result {
                         Ok(outcome) => outcome,
                         Err(error) => StrategyExecutionOutcome {
+                            strategy_id: "join".into(),
+                            labels: vec!["join".into()],
                             label: "join".into(),
                             title_guard_mode: TitleGuardMode::SkipTitleMatch,
                             response: Err(AppError::Repository(format!(
@@ -3956,6 +4475,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
                     any_strategy_fired = true;
                     primary_attempted = true;
+                    let diagnostic_labels = outcome.labels.join("|");
                     match outcome.response {
                         Ok(mut response) => {
                             all_strategies_complete &=
@@ -3998,23 +4518,28 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     is_rss_request,
                                 },
                             );
+                            primary_usable_result_count = primary_usable_result_count
+                                .saturating_add(response.results.len());
                             if response.completion == IndexerSearchCompletion::Complete {
-                                record_strategy_learning_outcome(
-                                    &search_learning,
-                                    learning_context.as_ref(),
-                                    mode,
-                                    &indexer_id,
-                                    &indexer_name,
-                                    &outcome.label,
-                                    response.results.len(),
-                                )
-                                .await;
+                                for label in &outcome.labels {
+                                    record_strategy_learning_outcome(
+                                        &search_learning,
+                                        learning_context.as_ref(),
+                                        mode,
+                                        &indexer_id,
+                                        &indexer_name,
+                                        label,
+                                        response.results.len(),
+                                    )
+                                    .await;
+                                }
                             }
                             if page_sink.is_some() {
                                 let mut persisted = if let Some(diagnostics) = search_diagnostics.as_ref() {
                                     let run_id = match diagnostics
                                         .persist_response(
-                                            &outcome.label,
+                                            &outcome.strategy_id,
+                                            &diagnostic_labels,
                                             raw_result_count,
                                             &response,
                                         )
@@ -4075,7 +4600,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 if let Some(diagnostics) = search_diagnostics.as_ref() {
                                     diagnostics
                                         .record_response(
-                                            &outcome.label,
+                                            &outcome.strategy_id,
+                                            &diagnostic_labels,
                                             raw_result_count,
                                             &response,
                                         )
@@ -4102,7 +4628,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                             if let Some(diagnostics) = search_diagnostics.as_ref() {
                                 diagnostics
                                     .record_error(
-                                        &outcome.label,
+                                        &outcome.strategy_id,
+                                        &diagnostic_labels,
                                         &err,
                                         outcome.retry_after,
                                     )
@@ -4139,7 +4666,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                 if should_run_fallback_tier(
                     mode,
-                    &collected_results,
+                    primary_usable_result_count,
                     primary_attempted,
                     primary_had_error,
                     &fallback_strategies,
@@ -4167,17 +4694,51 @@ impl IndexerClient for MultiIndexerSearchClient {
                             cancel_token: task_cancel_token.child_token(),
                             deadline_at,
                         };
-                    let mut fallback_outcomes = Self::execute_strategy_tier(
-                        fallback_context,
+                    let fallback_strategies = prepare_search_strategies(
+                        &fallback_context,
                         fallback_strategies,
-                        None,
-                        page_sink.as_ref().expect("stream sink is present").clone(),
                     );
+                    let fallback_selection = match select_reusable_strategies(
+                        fallback_strategies,
+                        &mut reusable_strategies,
+                        &indexer_id,
+                        page_sink.as_ref().expect("stream sink is present"),
+                    )
+                    .await
+                    {
+                        Ok(selection) => selection,
+                        Err(error) => {
+                            return (
+                                indexer_id,
+                                indexer_name,
+                                scheduler_lease_for_task.clone(),
+                                Err(error),
+                                false,
+                            );
+                        }
+                    };
+                    all_strategies_complete &= fallback_selection.deferred_count == 0;
+                    let fallback_live = fallback_selection.live;
+                    let mut fallback_outcomes = if fallback_live.is_empty() {
+                        StrategyTierOutcomes::Legacy(tokio::task::JoinSet::new())
+                    } else if live_search_admitted {
+                        Self::execute_strategy_tier(
+                            fallback_context,
+                            fallback_live,
+                            None,
+                            page_sink.as_ref().expect("stream sink is present").clone(),
+                        )
+                    } else {
+                        all_strategies_complete = false;
+                        StrategyTierOutcomes::Legacy(tokio::task::JoinSet::new())
+                    };
 
                     while let Some(join_result) = fallback_outcomes.join_next().await {
                         let mut outcome = match join_result {
                             Ok(outcome) => outcome,
                             Err(error) => StrategyExecutionOutcome {
+                                strategy_id: "join".into(),
+                                labels: vec!["join".into()],
                                 label: "join".into(),
                                 title_guard_mode: TitleGuardMode::SkipTitleMatch,
                                 response: Err(AppError::Repository(format!(
@@ -4211,6 +4772,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             continue;
                         }
                         any_strategy_fired = true;
+                        let diagnostic_labels = outcome.labels.join("|");
                         match outcome.response {
                             Ok(mut response) => {
                                 all_strategies_complete &=
@@ -4254,22 +4816,25 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     },
                                 );
                                 if response.completion == IndexerSearchCompletion::Complete {
-                                    record_strategy_learning_outcome(
-                                        &search_learning,
-                                        learning_context.as_ref(),
-                                        mode,
-                                        &indexer_id,
-                                        &indexer_name,
-                                        &outcome.label,
-                                        response.results.len(),
-                                    )
-                                    .await;
+                                    for label in &outcome.labels {
+                                        record_strategy_learning_outcome(
+                                            &search_learning,
+                                            learning_context.as_ref(),
+                                            mode,
+                                            &indexer_id,
+                                            &indexer_name,
+                                            label,
+                                            response.results.len(),
+                                        )
+                                        .await;
+                                    }
                                 }
                                 if page_sink.is_some() {
                                     let mut persisted = if let Some(diagnostics) = search_diagnostics.as_ref() {
                                         let run_id = match diagnostics
                                             .persist_response(
-                                                &outcome.label,
+                                                &outcome.strategy_id,
+                                                &diagnostic_labels,
                                                 raw_result_count,
                                                 &response,
                                             )
@@ -4330,7 +4895,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     if let Some(diagnostics) = search_diagnostics.as_ref() {
                                         diagnostics
                                             .record_response(
-                                                &outcome.label,
+                                                &outcome.strategy_id,
+                                                &diagnostic_labels,
                                                 raw_result_count,
                                                 &response,
                                             )
@@ -4356,7 +4922,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 if let Some(diagnostics) = search_diagnostics.as_ref() {
                                     diagnostics
                                         .record_error(
-                                            &outcome.label,
+                                            &outcome.strategy_id,
+                                            &diagnostic_labels,
                                             &err,
                                             outcome.retry_after,
                                         )
@@ -4474,6 +5041,14 @@ impl IndexerClient for MultiIndexerSearchClient {
                     );
                 }
 
+                let task_indexer_outcomes = scheduler_blocked_outcome
+                    .filter(|_| !all_strategies_complete)
+                    .map(|outcome| IndexerQueryOutcome {
+                        indexer_id: indexer_id.clone(),
+                        outcome,
+                    })
+                    .into_iter()
+                    .collect();
                 (
                     indexer_id,
                     indexer_name,
@@ -4481,13 +5056,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                     Ok(IndexerSearchResponse {
                         results: collected_results,
 
-                        indexer_outcomes: Vec::new(),
+                        indexer_outcomes: task_indexer_outcomes,
                         completion: if all_strategies_complete {
                             IndexerSearchCompletion::Complete
                         } else {
                             IndexerSearchCompletion::Partial {
                                 reason: None,
-                                retry_after: None,
+                                retry_after: scheduler_retry_after,
                             }
                         },
                         api_current: quota_observation.api_current,
@@ -4535,17 +5110,6 @@ impl IndexerClient for MultiIndexerSearchClient {
 
             match join_result {
                 Ok((id, name, scheduler_lease, Ok(mut response), should_record_feedback)) => {
-                    let was_fired = should_record_feedback
-                        || scheduler_lease
-                            .as_ref()
-                            .is_some_and(|lease| lease.operation == SchedulerOperation::Rss);
-                    if !was_fired {
-                        indexer_outcomes.push(IndexerQueryOutcome {
-                            indexer_id: id,
-                            outcome: IndexerSearchOutcome::Skipped { retry_after: None },
-                        });
-                        continue;
-                    }
                     let empty = response.results.is_empty();
                     if should_record_feedback {
                         // A fired query that returned nothing is an
@@ -4572,6 +5136,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         count = response.results.len(),
                         "indexer returned aggregated results"
                     );
+                    let explicit_outcomes = std::mem::take(&mut response.indexer_outcomes);
                     let outcome = match response.completion {
                         IndexerSearchCompletion::Complete => {
                             IndexerSearchOutcome::Complete { empty }
@@ -4586,10 +5151,14 @@ impl IndexerClient for MultiIndexerSearchClient {
                         },
                     };
                     all_results.append(&mut response.results);
-                    indexer_outcomes.push(IndexerQueryOutcome {
-                        indexer_id: id,
-                        outcome,
-                    });
+                    if explicit_outcomes.is_empty() {
+                        indexer_outcomes.push(IndexerQueryOutcome {
+                            indexer_id: id,
+                            outcome,
+                        });
+                    } else {
+                        indexer_outcomes.extend(explicit_outcomes);
+                    }
                 }
                 Ok((id, name, scheduler_lease, Err(err), should_record_feedback)) => {
                     if err.is_canceled() {
@@ -5252,7 +5821,10 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::{Duration, Utc};
-    use scryer_application::{IndexerQueryStats, IndexerSearchResponse, SchedulerBatchDecision};
+    use scryer_application::{
+        IndexerQueryStats, IndexerSearchPlanCapability, IndexerSearchPlanSummary,
+        IndexerSearchResponse, ReleaseStrategyKind, SchedulerBatchDecision,
+    };
     use scryer_domain::IndexerProviderCapabilities;
 
     use super::*;
@@ -5288,6 +5860,8 @@ mod tests {
             })
         };
         let execution = |request_fired, response| StrategyExecutionOutcome {
+            strategy_id: "strategy".into(),
+            labels: vec!["synthetic".into()],
             label: "synthetic".into(),
             title_guard_mode: TitleGuardMode::SkipTitleMatch,
             response,
@@ -5623,6 +6197,98 @@ mod tests {
             _filter: scryer_application::SchedulerSnapshotFilter,
         ) -> AppResult<SchedulerSnapshot> {
             Ok(SchedulerSnapshot::default())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum PlanFailureMode {
+        InvocationError,
+        DuplicateEvent,
+        MissingEvent,
+    }
+
+    struct ProtocolPlanIndexerClient {
+        mode: PlanFailureMode,
+    }
+
+    #[async_trait]
+    impl IndexerClient for ProtocolPlanIndexerClient {
+        fn search_plan_capability(&self) -> Option<IndexerSearchPlanCapability> {
+            Some(IndexerSearchPlanCapability {
+                version: 1,
+                max_parallel_strategies: 4,
+            })
+        }
+
+        async fn search_plan(
+            &self,
+            request: IndexerSearchPlanRequest,
+            _mode: SearchMode,
+            _operation: IndexerErrorOperation,
+            _cancel_token: CancellationToken,
+            event_sink: IndexerSearchStrategyEventSink,
+        ) -> AppResult<IndexerSearchPlanSummary> {
+            let strategy_id = request.strategies[0].strategy_id.clone();
+            let response = IndexerSearchResponse {
+                completion: IndexerSearchCompletion::Complete,
+                indexer_outcomes: Vec::new(),
+                results: vec![search_result("Synthetic.Plan.Result")],
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            };
+            event_sink
+                .send(IndexerSearchStrategyEvent {
+                    strategy_id: strategy_id.clone(),
+                    response: Ok(response.clone()),
+                })
+                .await
+                .expect("plan event receiver should remain open");
+
+            match self.mode {
+                PlanFailureMode::InvocationError => {
+                    Err(AppError::Repository("synthetic plan interruption".into()))
+                }
+                PlanFailureMode::MissingEvent => Ok(IndexerSearchPlanSummary {
+                    plan_id: request.plan_id,
+                    emitted_strategy_ids: vec![strategy_id],
+                }),
+                PlanFailureMode::DuplicateEvent => {
+                    event_sink
+                        .send(IndexerSearchStrategyEvent {
+                            strategy_id: strategy_id.clone(),
+                            response: Ok(response),
+                        })
+                        .await
+                        .expect("plan event receiver should remain open");
+                    Ok(IndexerSearchPlanSummary {
+                        plan_id: request.plan_id,
+                        emitted_strategy_ids: vec![strategy_id],
+                    })
+                }
+            }
+        }
+
+        async fn search(
+            &self,
+            _query: String,
+            _ids: HashMap<String, String>,
+            _category: Option<String>,
+            _facet: Option<String>,
+            _id_search_facet: Option<String>,
+            _newznab_categories: Option<Vec<String>>,
+            _indexer_routing: Option<IndexerRoutingPlan>,
+            _mode: SearchMode,
+            _operation: IndexerErrorOperation,
+            _season: Option<u32>,
+            _episode: Option<u32>,
+            _absolute_episode: Option<u32>,
+            _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<IndexerSearchLearningContext>,
+            _cancel_token: CancellationToken,
+        ) -> AppResult<IndexerSearchResponse> {
+            Err(AppError::Repository("unary search was not expected".into()))
         }
     }
 
@@ -6247,6 +6913,159 @@ mod tests {
             auto_decision_code: None,
             auto_decision_summary: None,
         }
+    }
+
+    fn prepared_strategy(strategy_id: &str) -> PreparedSearchStrategy {
+        PreparedSearchStrategy {
+            strategy_id: strategy_id.to_string(),
+            labels: vec![format!("strategy:{strategy_id}")],
+            request: IndexerSearchStrategyRequest {
+                strategy_id: strategy_id.to_string(),
+                labels: vec![format!("strategy:{strategy_id}")],
+                query: format!("synthetic-{strategy_id}"),
+                ids: HashMap::new(),
+                category: None,
+                facet: None,
+                id_search_facet: None,
+                newznab_categories: None,
+                season: None,
+                episode: None,
+                absolute_episode: None,
+                tagged_aliases: Vec::new(),
+            },
+            title_guard_mode: TitleGuardMode::SkipTitleMatch,
+        }
+    }
+
+    async fn protocol_plan_outcomes(mode: PlanFailureMode) -> Vec<StrategyExecutionOutcome> {
+        let (page_tx, _page_rx) = tokio::sync::mpsc::channel(4);
+        let mut outcomes = MultiIndexerSearchClient::execute_plan_strategy_tier(
+            StrategyTierContext {
+                client: Arc::new(ProtocolPlanIndexerClient { mode }),
+                search_limit: Arc::new(Semaphore::new(1)),
+                rate_limiter: IndexerRateLimiter::new(),
+                indexer_id: "indexer-1".into(),
+                search_timeout: std::time::Duration::from_secs(5),
+                rate_limit_seconds: None,
+                category: None,
+                per_indexer_categories: None,
+                mode: SearchMode::Auto,
+                operation: IndexerErrorOperation::AutomaticSearch,
+                tagged_aliases: Vec::new(),
+                cancel_token: CancellationToken::new(),
+                deadline_at: None,
+            },
+            vec![prepared_strategy("first"), prepared_strategy("second")],
+            None,
+            IndexerSearchPageSink::new(page_tx, 4),
+        );
+        let mut collected = Vec::new();
+        while let Some(outcome) = outcomes.join_next().await {
+            collected.push(outcome.expect("plan controller does not use join tasks"));
+        }
+        collected
+    }
+
+    #[tokio::test]
+    async fn interrupted_plan_keeps_emitted_strategy_complete() {
+        let outcomes = protocol_plan_outcomes(PlanFailureMode::InvocationError).await;
+        let first = outcomes
+            .iter()
+            .filter(|outcome| outcome.strategy_id == "first")
+            .collect::<Vec<_>>();
+        assert_eq!(first.len(), 1);
+        assert!(
+            strategy_execution_is_complete(first[0]),
+            "emitted strategy outcome was not complete: {:?}",
+            first[0]
+        );
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| { outcome.strategy_id == "second" && outcome.response.is_err() })
+        );
+    }
+
+    #[tokio::test]
+    async fn structurally_invalid_plan_reopens_every_strategy() {
+        for mode in [
+            PlanFailureMode::DuplicateEvent,
+            PlanFailureMode::MissingEvent,
+        ] {
+            let outcomes = protocol_plan_outcomes(mode).await;
+            for strategy_id in ["first", "second"] {
+                assert!(outcomes.iter().any(|outcome| {
+                    outcome.strategy_id == strategy_id && outcome.response.is_err()
+                }));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn strategy_reuse_replays_candidates_and_retries_only_open_work() {
+        let strategies = vec![
+            prepared_strategy("complete"),
+            prepared_strategy("deferred"),
+            prepared_strategy("partial"),
+        ];
+        let mut reusable = HashMap::from([
+            (
+                "complete".to_string(),
+                ReusableStrategyState {
+                    completion_state: "complete".into(),
+                    retry_at: None,
+                    candidates: vec![search_result("Synthetic.Complete")],
+                },
+            ),
+            (
+                "deferred".to_string(),
+                ReusableStrategyState {
+                    completion_state: "deferred".into(),
+                    retry_at: Some(Utc::now() + Duration::minutes(1)),
+                    candidates: vec![search_result("Synthetic.Deferred")],
+                },
+            ),
+            (
+                "partial".to_string(),
+                ReusableStrategyState {
+                    completion_state: "partial".into(),
+                    retry_at: Some(Utc::now() + Duration::minutes(1)),
+                    candidates: vec![search_result("Synthetic.Partial")],
+                },
+            ),
+        ]);
+        let (page_tx, mut page_rx) = tokio::sync::mpsc::channel(4);
+        let page_sink = IndexerSearchPageSink::new(page_tx, 4);
+
+        let selection =
+            select_reusable_strategies(strategies, &mut reusable, "indexer-1", &page_sink)
+                .await
+                .expect("strategy reuse should succeed");
+
+        assert_eq!(selection.complete_count, 1);
+        assert_eq!(selection.deferred_count, 1);
+        assert_eq!(selection.replayed_result_count, 3);
+        assert_eq!(selection.live.len(), 1);
+        assert_eq!(selection.live[0].strategy_id, "partial");
+
+        let mut replayed_pages = 0;
+        while let Ok(page) = page_rx.try_recv() {
+            replayed_pages += 1;
+            assert_eq!(page.results.len(), 1);
+            assert_eq!(page.results[0].indexer_id.as_deref(), Some("indexer-1"));
+        }
+        assert_eq!(replayed_pages, 3);
+    }
+
+    #[test]
+    fn reusable_strategy_provenance_matches_live_strategy_labels() {
+        let id_backed = reusable_strategy_provenance("ids_tvdb|ids");
+        assert_eq!(id_backed.strategy_kind, ReleaseStrategyKind::IdBacked);
+        assert!(id_backed.title_validated_upstream);
+
+        let freetext = reusable_strategy_provenance("freetext_alias");
+        assert_eq!(freetext.strategy_kind, ReleaseStrategyKind::Freetext);
+        assert!(!freetext.title_validated_upstream);
     }
 
     #[test]
@@ -9380,6 +10199,27 @@ mod tests {
             Ok(())
         }
 
+        async fn list_search_run_candidates(
+            &self,
+            run_id: &str,
+        ) -> AppResult<Vec<ReusableIndexerSearchCandidate>> {
+            Ok(self
+                .diagnostics
+                .lock()
+                .expect("search diagnostics mutex")
+                .iter()
+                .find(|(run, _)| run.id == run_id)
+                .map(|(_, candidates)| {
+                    candidates
+                        .iter()
+                        .map(|candidate| ReusableIndexerSearchCandidate {
+                            normalized: candidate.normalized.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default())
+        }
+
         async fn cleanup_search_diagnostics(
             &self,
             _candidate_cutoff: DateTime<Utc>,
@@ -9858,14 +10698,14 @@ mod tests {
 
         assert!(!should_run_fallback_tier(
             SearchMode::Auto,
-            &[],
+            0,
             true,
             true,
             &fallback
         ));
         assert!(should_run_fallback_tier(
             SearchMode::Interactive,
-            &[],
+            0,
             true,
             true,
             &fallback

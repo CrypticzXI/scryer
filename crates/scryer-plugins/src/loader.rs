@@ -698,6 +698,25 @@ fn builtin_indexer_asset_for_provider(
 }
 
 impl IndexerPluginProvider for WasmIndexerPluginProvider {
+    fn validate_config_for_provider(
+        &self,
+        provider_type: &str,
+        config_json: &str,
+    ) -> AppResult<()> {
+        let Some(loaded) = self.get_loaded(provider_type) else {
+            return Ok(());
+        };
+        let Some(indexer) = loaded.descriptor.indexer() else {
+            return Ok(());
+        };
+        if indexer.provider_profiles.is_empty() {
+            return Ok(());
+        }
+        crate::newznab_profiles::resolve_newznab_profile(indexer, provider_type, Some(config_json))
+            .map(|_| ())
+            .map_err(|error| AppError::Validation(error.to_string()))
+    }
+
     fn available_provider_types(&self) -> Vec<String> {
         self.plugins.keys().cloned().collect()
     }
@@ -759,7 +778,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
                     })
                 })
             })
-            .collect()
+            .collect::<Vec<_>>()
     }
 
     fn config_fields_for_provider(
@@ -983,6 +1002,17 @@ impl DynamicPluginProvider {
 }
 
 impl IndexerPluginProvider for DynamicPluginProvider {
+    fn validate_config_for_provider(
+        &self,
+        provider_type: &str,
+        config_json: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned")
+            .validate_config_for_provider(provider_type, config_json)
+    }
+
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
         self.client_for_provider_with_proxy(config, None)
     }
@@ -1852,6 +1882,15 @@ fn validate_indexer_descriptor(
 
 fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
     if let Some(indexer) = descriptor.indexer() {
+        if let Err(error) = crate::newznab_profiles::validate_newznab_profiles(indexer) {
+            warn!(
+                plugin = descriptor.id.as_str(),
+                provider_type = descriptor.provider_type(),
+                error = %error,
+                "indexer descriptor rejected: invalid provider profile"
+            );
+            return false;
+        }
         let invalid_facets = indexer
             .capabilities
             .supported_query_facets
@@ -3943,6 +3982,7 @@ mod tests {
             "indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
                 provider_type: "test".to_string(),
                 provider_aliases: vec![],
+                provider_profiles: vec![],
                 source_kind: IndexerSourceKind::Generic,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
@@ -3950,10 +3990,12 @@ mod tests {
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
                 search_semantics_version: Some(1),
+                strategy_plan: None,
             }),
             "usenet_indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
                 provider_type: "test".to_string(),
                 provider_aliases: vec![],
+                provider_profiles: vec![],
                 source_kind: IndexerSourceKind::Usenet,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
@@ -3961,10 +4003,12 @@ mod tests {
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
                 search_semantics_version: Some(1),
+                strategy_plan: None,
             }),
             "torrent_indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
                 provider_type: "test".to_string(),
                 provider_aliases: vec![],
+                provider_profiles: vec![],
                 source_kind: IndexerSourceKind::Torrent,
                 capabilities: Default::default(),
                 scoring_policies: vec![],
@@ -3972,6 +4016,7 @@ mod tests {
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
                 search_semantics_version: Some(1),
+                strategy_plan: None,
             }),
             "notification" => ProviderDescriptor::Notification(NotificationDescriptor {
                 provider_type: "test".to_string(),

@@ -7,7 +7,7 @@ mod tests {
         canonicalize_download_queue_item_clients, classify_download_queue_item,
         collect_download_client_filter_options, dedupe_download_queue_items,
         derive_download_queue_display_state, derive_indexer_base_url_from_config_fields,
-        download_queue_client_filter_key,
+        download_queue_client_filter_key, normalize_indexer_config_json,
         prepare_next_tracked_download_background_work_dispatch,
         prepare_tracked_download_background_work_dispatch,
         reconcile_duplicate_terminal_source_states, source_provider_label,
@@ -16,10 +16,12 @@ mod tests {
     use crate::DownloadDisplayState;
     use chrono::{Duration, Utc};
     use scryer_domain::{
-        DownloadClientConfig, DownloadClientStatus, DownloadQueueItem, DownloadQueueState,
-        ImportRecord, ImportStatus, ImportTransferPhase, ImportType, TitleMatchType,
-        TrackedDownloadState, TrackedDownloadStatus,
+        ConfigFieldDef, ConfigFieldOption, ConfigFieldRole, ConfigFieldType,
+        ConfigFieldValueSource, DownloadClientConfig, DownloadClientStatus, DownloadQueueItem,
+        DownloadQueueState, ImportRecord, ImportStatus, ImportTransferPhase, ImportType,
+        TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
     };
+    use std::collections::BTreeMap;
 
     #[test]
     fn fixed_endpoint_indexer_without_config_fields_has_no_derived_base_url() {
@@ -28,6 +30,88 @@ mod tests {
                 .expect("configless indexer is valid"),
             ""
         );
+    }
+
+    #[test]
+    fn selected_indexer_option_fills_only_missing_config_values() {
+        let fields = vec![
+            ConfigFieldDef {
+                key: "profile_id".to_string(),
+                label: "Known Provider".to_string(),
+                field_type: ConfigFieldType::Select,
+                required: true,
+                default_value: Some("custom".to_string()),
+                value_source: ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: vec![ConfigFieldOption {
+                    value: "known".to_string(),
+                    label: "Known".to_string(),
+                    config_overrides: BTreeMap::from([
+                        (
+                            "base_url".to_string(),
+                            "https://api.example.test".to_string(),
+                        ),
+                        ("api_path".to_string(), "/api".to_string()),
+                        ("request_interval_ms".to_string(), "2000".to_string()),
+                    ]),
+                }],
+                help_text: None,
+            },
+            ConfigFieldDef {
+                key: "base_url".to_string(),
+                label: "Base URL".to_string(),
+                field_type: ConfigFieldType::String,
+                required: false,
+                default_value: None,
+                value_source: ConfigFieldValueSource::User,
+                role: Some(ConfigFieldRole::ConnectionUrl),
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            },
+            ConfigFieldDef {
+                key: "api_path".to_string(),
+                label: "API Path".to_string(),
+                field_type: ConfigFieldType::String,
+                required: false,
+                default_value: Some("/default".to_string()),
+                value_source: ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            },
+            ConfigFieldDef {
+                key: "request_interval_ms".to_string(),
+                label: "Request Interval".to_string(),
+                field_type: ConfigFieldType::Number,
+                required: false,
+                default_value: Some("1000".to_string()),
+                value_source: ConfigFieldValueSource::User,
+                role: None,
+                host_binding: None,
+                options: vec![],
+                help_text: None,
+            },
+        ];
+
+        let normalized = normalize_indexer_config_json(
+            &fields,
+            Some(r#"{"profile_id":"known","request_interval_ms":"750"}"#),
+            Some(r#"{"api_path":"/persisted"}"#),
+        )
+        .expect("selected option should normalize");
+        let config: serde_json::Value = serde_json::from_str(&normalized).expect("normalized JSON");
+
+        assert_eq!(config["base_url"], "https://api.example.test");
+        assert_eq!(config["api_path"], "/persisted");
+        assert_eq!(config["request_interval_ms"], "750");
+
+        let error =
+            normalize_indexer_config_json(&fields, Some(r#"{"profile_id":"custom"}"#), None)
+                .expect_err("custom selection requires an explicit connection URL");
+        assert!(error.to_string().contains("Base URL is required"));
     }
 
     fn item(id: &str, state: DownloadQueueState) -> DownloadQueueItem {

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -4556,6 +4556,8 @@ pub struct ConfigFieldDef {
 pub struct ConfigFieldOption {
     pub value: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_overrides: BTreeMap<String, String>,
 }
 
 // ── Notification types ──────────────────────────────────────────────

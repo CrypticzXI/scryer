@@ -255,6 +255,7 @@ impl FakeNotificationProvider {
                     options: vec![ConfigFieldOption {
                         value: "/data => /mnt".to_string(),
                         label: "Example".to_string(),
+                        config_overrides: Default::default(),
                     }],
                     help_text: Some("One mapping per line.".to_string()),
                 },
