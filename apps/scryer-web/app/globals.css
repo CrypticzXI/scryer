@@ -173,8 +173,10 @@
   --scry-pp2: #ffffff;
   --scry-side1: rgba(255, 255, 255, 0.9);
   --scry-side2: rgba(248, 250, 253, 0.9);
+  --scry-shell-left-glow: rgba(var(--scry-accent-rgb), 0.055);
+  --scry-shell-left-glow-reach: 34rem;
   --scry-shell-bg:
-    radial-gradient(circle at 14% 10%, rgba(var(--scry-accent-rgb), 0.1), transparent 26rem),
+    radial-gradient(circle at 14% 10%, var(--scry-shell-left-glow), transparent var(--scry-shell-left-glow-reach)),
     radial-gradient(circle at 86% 14%, rgba(56, 189, 248, 0.06), transparent 28rem),
     radial-gradient(circle at 60% 92%, rgba(16, 185, 129, 0.05), transparent 34rem),
     linear-gradient(180deg, var(--scry-page1) 0%, var(--scry-page2) 42%, var(--scry-page3) 100%);
@@ -235,6 +237,8 @@
 
 .dark {
   /* Dark theme */
+  --scry-shell-left-glow: rgba(var(--scry-accent-rgb), 0.1);
+  --scry-shell-left-glow-reach: 26rem;
   --scry-page1: #070d1d;
   --scry-page2: #040814;
   --scry-page3: #02050c;
