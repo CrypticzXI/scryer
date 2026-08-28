@@ -3337,6 +3337,8 @@ pub struct NormalizedIndexerSearchCandidate {
     pub thumbs_up: Option<i32>,
     pub thumbs_down: Option<i32>,
     pub grabs: Option<i64>,
+    pub grab_current: Option<i64>,
+    pub grab_max: Option<i64>,
     pub languages: Vec<String>,
     pub subtitles: Vec<String>,
     pub response_tvdb_id: Option<String>,
@@ -3411,6 +3413,16 @@ pub trait IndexerSearchLearningRepository: Send + Sync {
         &self,
         _run: &IndexerSearchRunWrite,
         _candidates: &[IndexerSearchCandidateWrite],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// Makes the evaluated subset from one search pass reusable and discards
+    /// every staged payload that automatic acquisition rejected.
+    async fn finalize_search_session(
+        &self,
+        _search_session_id: &str,
+        _admissible_fingerprints: &[String],
     ) -> AppResult<()> {
         Ok(())
     }
@@ -5365,6 +5377,14 @@ pub trait PluginDescriptorLoader: Send + Sync {
 
 #[async_trait]
 pub trait IndexerClient: Send + Sync {
+    async fn finalize_search_session(
+        &self,
+        _search_session_id: &str,
+        _admissible_fingerprints: &[String],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     fn search_plan_capability(&self) -> Option<IndexerSearchPlanCapability> {
         None
     }
@@ -5445,6 +5465,78 @@ pub trait IndexerClient: Send + Sync {
         }
         response.results = results;
         Ok(response)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the streaming adapter preserves the complete search envelope"
+    )]
+    async fn search_queries_stream(
+        &self,
+        queries: Vec<String>,
+        ids: std::collections::HashMap<String, String>,
+        category: Option<String>,
+        facet: Option<String>,
+        id_search_facet: Option<String>,
+        newznab_categories: Option<Vec<String>>,
+        indexer_routing: Option<IndexerRoutingPlan>,
+        mode: SearchMode,
+        operation: IndexerErrorOperation,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+        tagged_aliases: Vec<TaggedAlias>,
+        learning_context: Option<IndexerSearchLearningContext>,
+        cancel_token: tokio_util::sync::CancellationToken,
+        page_sink: crate::IndexerSearchPageSink,
+    ) -> AppResult<IndexerSearchResponse> {
+        let mut combined: Option<IndexerSearchResponse> = None;
+        for query in queries {
+            let mut response = self
+                .search_stream(
+                    query,
+                    ids.clone(),
+                    category.clone(),
+                    facet.clone(),
+                    id_search_facet.clone(),
+                    newznab_categories.clone(),
+                    indexer_routing.clone(),
+                    mode,
+                    operation,
+                    season,
+                    episode,
+                    absolute_episode,
+                    tagged_aliases.clone(),
+                    learning_context.clone(),
+                    cancel_token.child_token(),
+                    page_sink.clone(),
+                )
+                .await?;
+            if let Some(existing) = combined.as_mut() {
+                existing.results.append(&mut response.results);
+                existing
+                    .indexer_outcomes
+                    .append(&mut response.indexer_outcomes);
+                if response.completion != IndexerSearchCompletion::Complete {
+                    existing.completion = response.completion;
+                }
+                existing.api_current = response.api_current.or(existing.api_current);
+                existing.api_max = response.api_max.or(existing.api_max);
+                existing.grab_current = response.grab_current.or(existing.grab_current);
+                existing.grab_max = response.grab_max.or(existing.grab_max);
+            } else {
+                combined = Some(response);
+            }
+        }
+        Ok(combined.unwrap_or(IndexerSearchResponse {
+            results: Vec::new(),
+            completion: IndexerSearchCompletion::Complete,
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+            indexer_outcomes: Vec::new(),
+        }))
     }
 
     #[expect(

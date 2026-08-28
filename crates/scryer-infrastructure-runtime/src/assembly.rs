@@ -1294,12 +1294,14 @@ impl DatastoreAssembly {
 
     pub fn indexer_search_learning_repository(&self) -> Arc<dyn IndexerSearchLearningRepository> {
         match &self.stores {
-            DatastoreStores::Sqlite { db, .. } => {
-                Arc::new(IndexerSearchLearningStore::new(db.datastore()))
-            }
-            DatastoreStores::Postgres { db, .. } => {
-                Arc::new(IndexerSearchLearningStore::new(db.datastore()))
-            }
+            DatastoreStores::Sqlite { db, .. } => Arc::new(IndexerSearchLearningStore::new(
+                db.datastore(),
+                db.encryption_key_state(),
+            )),
+            DatastoreStores::Postgres { db, .. } => Arc::new(IndexerSearchLearningStore::new(
+                db.datastore(),
+                db.encryption_key_state(),
+            )),
         }
     }
 
