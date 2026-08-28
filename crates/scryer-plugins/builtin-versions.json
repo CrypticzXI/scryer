@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "plugins": {
+    "newznab": "2.0.1",
+    "torznab": "2.0.1"
+  }
+}

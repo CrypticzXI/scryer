@@ -123,6 +123,7 @@ const OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_URL: &str =
 const OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_BUNDLE_URL: &str =
     "https://cdn.scryer.media/scryer/catalog/v3/catalog-v3.redirect.bundle.json";
 const BUILTIN_ASSET_DIR: &str = "crates/scryer-plugins/builtins";
+const BUILTIN_VERSION_MANIFEST: &str = "crates/scryer-plugins/builtin-versions.json";
 const OFFICIAL_PLUGIN_REPO: &str = "scryer-media/scryer-plugins";
 const OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW: &str = ".github/workflows/release-plugin-v3.yml";
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
@@ -185,6 +186,13 @@ static FULCIO_TRUST_ANCHORS: OnceLock<Result<Arc<FulcioTrustAnchors>, String>> =
 struct BuiltinPluginSpec {
     plugin_id: &'static str,
     artifact_stem: &'static str,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct BuiltinVersionManifest {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    plugins: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -487,7 +495,7 @@ fn main() -> Result<()> {
         Commands::Builtins(args) => match args.command {
             BuiltinsCommand::Sync => {
                 let scryer_version = package_version(&ctx.path("crates/scryer/Cargo.toml"))?;
-                refresh_builtin_plugins(&ctx, &scryer_version)?;
+                refresh_builtin_plugins(&ctx, &scryer_version, None, true)?;
                 Ok(())
             }
         },
@@ -1808,27 +1816,57 @@ fn cache_builtin_artifacts(cache_dir: &Path, builtins: &[PathBuf]) -> Result<()>
     Ok(())
 }
 
-fn reuse_existing_builtin_plugins(ctx: &TaskContext) -> Result<BuiltinRefresh> {
-    step("Reusing checked-in embedded plugin builtins");
-    let mut catalog_wasm_blake3 = BTreeMap::new();
-    for spec in BUILTIN_PLUGINS {
-        let paths = builtin_asset_paths(ctx, spec);
-        for path in [&paths.wasm, &paths.descriptor_json, &paths.description] {
-            if !path.is_file() {
-                bail!("checked-in builtin asset is missing: {}", path.display());
-            }
-        }
-        let compressed = fs::read(&paths.wasm)
-            .with_context(|| format!("failed to read {}", paths.wasm.display()))?;
-        let wasm = zstd::decode_all(compressed.as_slice())
-            .with_context(|| format!("failed to decompress {}", paths.wasm.display()))?;
-        catalog_wasm_blake3.insert(spec.plugin_id.to_string(), blake3_hex(&wasm));
+fn builtin_version_manifest_path(ctx: &TaskContext) -> PathBuf {
+    ctx.path(BUILTIN_VERSION_MANIFEST)
+}
+
+fn load_builtin_version_manifest(ctx: &TaskContext) -> Result<BuiltinVersionManifest> {
+    let path = builtin_version_manifest_path(ctx);
+    let manifest: BuiltinVersionManifest = serde_json::from_slice(
+        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    validate_builtin_version_manifest(&manifest)
+        .with_context(|| format!("invalid {}", path.display()))?;
+    Ok(manifest)
+}
+
+fn validate_builtin_version_manifest(manifest: &BuiltinVersionManifest) -> Result<()> {
+    if manifest.schema_version != 1 {
+        bail!("unsupported schemaVersion {}", manifest.schema_version);
     }
-    ok("Checked-in embedded plugin builtins are complete");
-    Ok(BuiltinRefresh {
-        paths: builtin_plugin_paths(ctx),
-        catalog_wasm_blake3,
-    })
+    let expected = BUILTIN_PLUGINS
+        .iter()
+        .map(|spec| spec.plugin_id)
+        .collect::<BTreeSet<_>>();
+    let actual = manifest
+        .plugins
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if actual != expected {
+        bail!("must select exactly the supported built-in plugins");
+    }
+    for (plugin_id, version) in &manifest.plugins {
+        Version::parse(version.trim_start_matches('v'))
+            .with_context(|| format!("has invalid version {version} for {plugin_id}"))?;
+    }
+    Ok(())
+}
+
+fn write_builtin_version_manifest(
+    ctx: &TaskContext,
+    plugins: BTreeMap<String, String>,
+) -> Result<()> {
+    let path = builtin_version_manifest_path(ctx);
+    fs::write(
+        &path,
+        canonical_pretty_json(&BuiltinVersionManifest {
+            schema_version: 1,
+            plugins,
+        })?,
+    )
+    .with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn builtin_cache_complete(cache_dir: &Path, builtins: &[PathBuf]) -> bool {
@@ -2831,37 +2869,12 @@ fn release_builtin_descriptor_loader(ctx: &TaskContext) -> Result<WasmPluginDesc
     Ok(WasmPluginDescriptorLoader)
 }
 
-fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<String> {
-    let paths = builtin_asset_paths(ctx, spec);
-    let compressed_wasm = fs::read(&paths.wasm)
-        .with_context(|| format!("failed to read existing builtin {}", paths.wasm.display()))?;
-    let wasm_bytes = zstd::decode_all(compressed_wasm.as_slice()).with_context(|| {
-        format!(
-            "failed to decompress existing builtin {}",
-            paths.wasm.display()
-        )
-    })?;
-    let descriptor = release_builtin_descriptor_loader(ctx)?
-        .load_descriptor_from_wasm_bytes(&wasm_bytes)
-        .map_err(|error| {
-            anyhow!(
-                "failed to describe existing builtin {}: {error}",
-                spec.plugin_id
-            )
-        })?;
-    require_builtin_descriptor_sdk_contract(
-        spec.plugin_id,
-        &descriptor.sdk_version,
-        &descriptor.sdk_constraint,
-    )?;
-    Ok(blake3_hex(&wasm_bytes))
-}
-
 fn sync_builtin_plugin(
     ctx: &TaskContext,
     spec: &BuiltinPluginSpec,
     scryer_version: &Version,
-) -> Result<String> {
+    requested_version: Option<&str>,
+) -> Result<(String, String)> {
     let catalog_signer = official_plugin_v3_signer();
     let redirect_bytes = fetch_verified_bytes(
         ctx,
@@ -2896,16 +2909,40 @@ fn sync_builtin_plugin(
         })?;
     require_official_plugin_v3_signer(spec.plugin_id, &entry.required_signer)?;
     latest_catalog_v3_release(spec.plugin_id, &entry.releases)?;
-    let Some(release) =
+    let release = if let Some(requested_version) = requested_version {
+        let release = entry
+            .releases
+            .iter()
+            .find(|release| {
+                release.version.trim_start_matches('v') == requested_version.trim_start_matches('v')
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "catalog-v3 no longer contains pinned builtin {} version {}",
+                    spec.plugin_id,
+                    requested_version
+                )
+            })?;
+        if !catalog_release_is_builtin_compatible(spec.plugin_id, release, scryer_version)? {
+            bail!(
+                "pinned builtin {} {} is incompatible with Scryer {} and SDK {}",
+                spec.plugin_id,
+                requested_version,
+                scryer_version,
+                scryer_plugin_sdk::SDK_VERSION
+            );
+        }
+        release
+    } else {
         latest_compatible_catalog_v3_release(spec.plugin_id, &entry.releases, scryer_version)?
-    else {
-        warn(format!(
-            "No catalog-v3 release for builtin {} is compatible with Scryer {} and SDK {}; keeping embedded builtin",
-            spec.plugin_id,
-            scryer_version,
-            scryer_plugin_sdk::SDK_VERSION
-        ));
-        return existing_builtin_wasm_digest(ctx, spec);
+            .ok_or_else(|| {
+                anyhow!(
+                    "no catalog-v3 release for builtin {} is compatible with Scryer {} and SDK {}",
+                    spec.plugin_id,
+                    scryer_version,
+                    scryer_plugin_sdk::SDK_VERSION
+                )
+            })?
     };
     let artifact = baseline_catalog_v3_zstd_artifact(spec.plugin_id, release)?;
     let compressed_wasm = fetch_verified_bytes(
@@ -2973,7 +3010,7 @@ fn sync_builtin_plugin(
         "synced builtin {} {} from official catalog-v3",
         spec.plugin_id, release.version
     ));
-    Ok(wasm_digest.to_string())
+    Ok((release.version.clone(), wasm_digest.to_string()))
 }
 
 fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
@@ -3002,16 +3039,48 @@ fn remove_stale_builtin_assets(ctx: &TaskContext) -> Result<()> {
     Ok(())
 }
 
-fn refresh_builtin_plugins(ctx: &TaskContext, scryer_version: &Version) -> Result<BuiltinRefresh> {
-    step("Syncing embedded plugin builtins from the official catalog");
+fn refresh_builtin_plugins(
+    ctx: &TaskContext,
+    scryer_version: &Version,
+    pinned_versions: Option<&BuiltinVersionManifest>,
+    update_manifest: bool,
+) -> Result<BuiltinRefresh> {
+    step(if pinned_versions.is_some() {
+        "Materializing pinned embedded plugin builtins from the official catalog"
+    } else {
+        "Syncing embedded plugin builtins from the official catalog"
+    });
     let mut catalog_wasm_blake3 = BTreeMap::new();
+    let mut selected_versions = BTreeMap::new();
     for spec in BUILTIN_PLUGINS {
-        let wasm_digest = sync_builtin_plugin(ctx, spec, scryer_version)
+        let pinned_version = pinned_versions
+            .map(|manifest| {
+                manifest
+                    .plugins
+                    .get(spec.plugin_id)
+                    .map(String::as_str)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "built-in manifest is missing version for {}",
+                            spec.plugin_id
+                        )
+                    })
+            })
+            .transpose()?;
+        let (version, wasm_digest) = sync_builtin_plugin(ctx, spec, scryer_version, pinned_version)
             .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
+        selected_versions.insert(spec.plugin_id.to_string(), version);
         catalog_wasm_blake3.insert(spec.plugin_id.to_string(), wasm_digest);
     }
     remove_stale_builtin_assets(ctx)?;
-    ok("Embedded plugin builtins refreshed");
+    if update_manifest {
+        write_builtin_version_manifest(ctx, selected_versions)?;
+    }
+    ok(if update_manifest {
+        "Embedded plugin builtins refreshed and manifest updated"
+    } else {
+        "Pinned embedded plugin builtins materialized"
+    });
     Ok(BuiltinRefresh {
         paths: builtin_plugin_paths(ctx),
         catalog_wasm_blake3,
@@ -3362,11 +3431,9 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         if validation_scope == ReleaseValidationScope::Full {
             sync_trash_guides_for_release(ctx)?;
         }
-        let refreshed_builtins = if validation_scope == ReleaseValidationScope::Full {
-            refresh_builtin_plugins(ctx, &next_version)?
-        } else {
-            reuse_existing_builtin_plugins(ctx)?
-        };
+        let builtin_manifest = load_builtin_version_manifest(ctx)?;
+        let refreshed_builtins =
+            refresh_builtin_plugins(ctx, &next_version, Some(&builtin_manifest), false)?;
         let validation_result = match validation_scope {
             ReleaseValidationScope::Full => {
                 step("Running web and Rust validation in parallel");
@@ -4478,14 +4545,21 @@ mod tests {
     }
 
     #[test]
-    fn release_builtin_descriptor_loader_reuses_wasm_runtime_for_multiple_builtins() {
-        let ctx = TaskContext::new();
-        for spec in &BUILTIN_PLUGINS[..2] {
-            let digest = existing_builtin_wasm_digest(&ctx, spec)
-                .expect("release builtin descriptor should load");
-            assert!(digest.starts_with("blake3:"));
-            assert_eq!(digest.len(), 71);
-        }
+    fn builtin_version_manifest_requires_exact_builtin_set() {
+        let valid = BuiltinVersionManifest {
+            schema_version: 1,
+            plugins: BTreeMap::from([
+                ("newznab".to_string(), "2.0.1".to_string()),
+                ("torznab".to_string(), "2.0.1".to_string()),
+            ]),
+        };
+        assert!(validate_builtin_version_manifest(&valid).is_ok());
+
+        let incomplete = BuiltinVersionManifest {
+            schema_version: 1,
+            plugins: BTreeMap::from([("newznab".to_string(), "2.0.1".to_string())]),
+        };
+        assert!(validate_builtin_version_manifest(&incomplete).is_err());
     }
 
     #[test]
