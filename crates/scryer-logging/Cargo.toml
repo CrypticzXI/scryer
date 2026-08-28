@@ -1,6 +1,6 @@
 [package]
 name = "scryer-logging"
-version = "0.18.19"
+version = "0.18.22"
 edition.workspace = true
 
 [dependencies]
