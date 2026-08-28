@@ -374,7 +374,7 @@ mod windows {
         }
 
         unsafe fn add_icon(&mut self, window: HWND) -> Result<(), String> {
-            // SAFETY: Resource ID 1 is the application-owned multi-resolution crab icon.
+            // SAFETY: Resource ID 1 is the application-owned multi-resolution Scryer icon.
             let icon = unsafe {
                 LoadIconW(
                     GetModuleHandleW(ptr::null()),
