@@ -4647,6 +4647,131 @@ async fn season_pack_grab_saves_the_remaining_ranked_packs_as_standby() {
     );
 }
 
+/// A season pack no longer wins simply by being the stage that ran first.
+///
+/// The season query surfaces an episode-shaped release the episode query never
+/// would; that row is already in hand, so ranking it against the pack costs
+/// nothing. When it is the better release the episode grab wins and the pack is
+/// set aside — and no episode-scoped query is spent finding that out.
+#[tokio::test]
+async fn in_hand_episode_evidence_outranks_a_season_pack_without_a_new_query() {
+    let pack = "Recent.Failed.Season.Pack.S07.720p.WEB-DL-PACK".to_string();
+    let episode_release = "Recent.Failed.Season.Pack.S07E23.1080p.WEB-DL-EP".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_season_pack_titles([pack.clone(), episode_release.clone()]),
+    );
+    let (app, title, indexer_client, download_client) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let submitted = download_client
+        .submitted_release_titles
+        .lock()
+        .await
+        .clone();
+    assert!(
+        submitted.contains(&episode_release),
+        "the better in-hand episode release must win arbitration: {submitted:?}"
+    );
+    assert!(
+        !submitted.contains(&pack),
+        "the pack covers a claimed episode and must be set aside: {submitted:?}"
+    );
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(
+        !searches.iter().any(|search| search.episode.is_some()),
+        "comparing the pack against evidence already in hand may not spend a query: {searches:?}"
+    );
+
+    // The sibling episode had no evidence of its own and grabbed nothing. It
+    // recorded no search either, so it is still a target next cycle rather than
+    // a scope converged on a query it never ran.
+    let states = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&title.id))
+        .await
+        .expect("load episode scope states");
+    assert!(
+        states
+            .iter()
+            .filter(|state| state.media_type == "episode" && state.grabbed_release.is_none())
+            .all(|state| state.last_search_at.is_none()),
+        "a scope that only re-ranked evidence in hand has not searched"
+    );
+}
+
+/// With nothing already in hand for the covered episodes, the pack wins
+/// unopposed — the default, and what happened before arbitration existed.
+/// Buying a comparison would cost a query, and it is not worth one.
+#[tokio::test]
+async fn a_season_pack_wins_by_default_when_no_free_episode_evidence_exists() {
+    let pack = "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-PACK".to_string();
+    let indexer_client =
+        Arc::new(TrackingIndexerClient::default().with_season_pack_titles([pack.clone()]));
+    let (app, _title, indexer_client, download_client) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let submitted = download_client
+        .submitted_release_titles
+        .lock()
+        .await
+        .clone();
+    assert!(
+        submitted.contains(&pack),
+        "with no evidence to rank against it, the pack still wins: {submitted:?}"
+    );
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(
+        !searches.iter().any(|search| search.episode.is_some()),
+        "the covered episode scopes stay unsearched, exactly as before: {searches:?}"
+    );
+}
+
+/// A winner that cannot be submitted does not take its episodes with it. The
+/// next-best proposal for the same episodes gets its turn in the same cycle.
+#[tokio::test]
+async fn a_losing_pack_still_grabs_when_the_winning_episode_submit_fails() {
+    let pack = "Recent.Failed.Season.Pack.S07.720p.WEB-DL-PACK".to_string();
+    let episode_release = "Recent.Failed.Season.Pack.S07E23.1080p.WEB-DL-EP".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_season_pack_titles([pack.clone(), episode_release.clone()]),
+    );
+    let (app, _title, _indexer_client, download_client) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+    // Only the first submit — the arbitration winner's — fails, and it fails
+    // definitively: a retryable failure would suppress the whole route, which
+    // the pack shares, and the point here is the episode set, not the route.
+    download_client
+        .set_submit_errors([StubSubmitError::Rejected(
+            "client refused the release".to_string(),
+        )])
+        .await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let submitted = download_client
+        .submitted_release_titles
+        .lock()
+        .await
+        .clone();
+    assert!(
+        submitted.contains(&episode_release),
+        "the winner is attempted first: {submitted:?}"
+    );
+    assert!(
+        submitted.contains(&pack),
+        "a winner that claimed nothing must hand the pack its turn: {submitted:?}"
+    );
+}
+
 #[tokio::test]
 async fn failed_season_pack_walks_the_saved_runner_up_without_an_indexer_query() {
     let first_pack = "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-FIRST".to_string();

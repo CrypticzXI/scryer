@@ -574,12 +574,20 @@ pub(crate) fn convergence_scope_key_for_state(item: &AcquisitionScopeState) -> O
 }
 
 /// Deterministic version string for a quality profile's acceptance criteria. Any
-/// edit that changes acceptance (cutoff, tiers, codecs, required audio, scoring)
-/// changes this, so the fingerprint changes and still-unsatisfied scopes re-open
-/// for convergence. Canonical (recursively sorted-key) JSON keeps the hash stable
+/// edit that changes acceptance (cutoff, tiers, codecs, required audio) changes
+/// this, so the fingerprint changes and still-unsatisfied scopes re-open for
+/// convergence. Canonical (recursively sorted-key) JSON keeps the hash stable
 /// regardless of map iteration order.
+///
+/// Hashes [`AcceptanceCriteria`], not the whole profile: a ranking-only edit
+/// (persona, score overrides, preference flags) re-orders the results a scope
+/// already has and needs no new indexer data, so it must not invalidate
+/// convergence coverage for every scope inheriting the profile and trigger a
+/// library-wide re-search. That projection is where a new criteria field gets
+/// classified acceptance-vs-ranking.
 pub(crate) fn profile_criteria_version(criteria: &QualityProfileCriteria) -> String {
-    let value = serde_json::to_value(criteria).unwrap_or(serde_json::Value::Null);
+    let acceptance = crate::quality_profile::AcceptanceCriteria::from(criteria);
+    let value = serde_json::to_value(&acceptance).unwrap_or(serde_json::Value::Null);
     crate::helpers::blake3_identity_hex(
         crate::helpers::HashDomain::QualityProfileCriteria,
         canonical_json_string(&value),
@@ -899,7 +907,7 @@ mod tests {
         profile_criteria_version, series_pack_collection_scope_key, series_pack_set_scope_key,
     };
     use crate::contracts::SubmissionScope;
-    use crate::quality_profile::QualityProfileCriteria;
+    use crate::quality_profile::{AcceptanceCriteria, QualityProfileCriteria};
 
     #[test]
     fn fingerprint_is_stable_and_order_independent_for_audio() {
@@ -1091,6 +1099,74 @@ mod tests {
         );
     }
 
+    /// A ranking-only profile edit must leave the criteria version alone.
+    ///
+    /// Re-ordering candidates is decided against results the scope already
+    /// holds; it needs no new indexer data. Hashing the persona, the score
+    /// overrides or the preference flags would re-open convergence for every
+    /// scope inheriting the profile and re-search the whole library to arrive at
+    /// the same corpus in a different order.
+    #[test]
+    fn a_ranking_only_profile_edit_does_not_move_the_criteria_version() {
+        let base = test_criteria();
+        let mut ranked_differently = base.clone();
+        ranked_differently.scoring_persona = crate::scoring_weights::ScoringPersona::Efficient;
+        ranked_differently.prefer_remux = !base.prefer_remux;
+        ranked_differently.atmos_preferred = !base.atmos_preferred;
+        ranked_differently.prefer_dual_audio = !base.prefer_dual_audio;
+        ranked_differently.scoring_overrides.prefer_compact_encodes = Some(true);
+        ranked_differently.facet_persona_overrides.insert(
+            "movie".to_string(),
+            crate::scoring_weights::ScoringPersona::Audiophile,
+        );
+
+        assert_ne!(
+            base.scoring_persona, ranked_differently.scoring_persona,
+            "the edit must actually differ, or this test proves nothing"
+        );
+        assert_eq!(
+            profile_criteria_version(&base),
+            profile_criteria_version(&ranked_differently),
+            "a ranking-only edit must not invalidate convergence coverage"
+        );
+    }
+
+    #[test]
+    fn every_acceptance_edit_moves_the_criteria_version() {
+        let base = test_criteria();
+        let baseline = profile_criteria_version(&base);
+
+        let mut tiers = base.clone();
+        tiers.quality_tiers.push("480p".to_string());
+
+        let mut upgrades = base.clone();
+        upgrades.allow_upgrades = !base.allow_upgrades;
+
+        let mut audio = base.clone();
+        audio.required_audio_languages.push("ja".to_string());
+
+        let mut cutoff = base.clone();
+        assert_eq!(cutoff.cutoff_score, None);
+        cutoff.cutoff_score = Some(400);
+
+        let mut unknown = base.clone();
+        unknown.allow_unknown_quality = !base.allow_unknown_quality;
+
+        for (label, edited) in [
+            ("quality_tiers", tiers),
+            ("allow_upgrades", upgrades),
+            ("required_audio_languages", audio),
+            ("cutoff_score", cutoff),
+            ("allow_unknown_quality", unknown),
+        ] {
+            assert_ne!(
+                baseline,
+                profile_criteria_version(&edited),
+                "an edit to {label} changes which releases are acceptable and must re-open convergence"
+            );
+        }
+    }
+
     /// **D19.** Adding a field to `QualityProfileCriteria` must not move the
     /// fingerprint of a profile that does not set it.
     ///
@@ -1105,26 +1181,42 @@ mod tests {
     /// hard-coded value the same one the profile hashed to before the field
     /// existed. Any future criteria field has to clear both.
     ///
-    /// The constant was re-pinned once, for the deliberate SHA-256 → BLAKE3
-    /// switch (plan 149). That is the only reason it may ever change: a moved
-    /// value with the algorithm unchanged is the library-wide re-sweep this
-    /// test exists to catch.
+    /// The constant has been re-pinned twice, both times for a deliberate change
+    /// to what is hashed: the SHA-256 → BLAKE3 switch (plan 149), and the
+    /// narrowing of the hash input from the whole `QualityProfileCriteria` to the
+    /// acceptance-only [`AcceptanceCriteria`] projection. Those are the only
+    /// reasons it may ever change: a moved value with the hash input unchanged is
+    /// the library-wide re-sweep this test exists to catch.
     #[test]
     fn an_unset_new_criteria_field_does_not_move_the_profile_fingerprint() {
         let base = test_criteria();
         assert_eq!(base.cutoff_score, None);
         assert_eq!(
             profile_criteria_version(&base),
-            "6e2467debec3f7f9e89e6711611e6fabc694ceae4f9418624cc24e250331e74e",
+            "5d83bd034035f542fae433da6567546566f520a818aa0f425f309a4e10f1e99f",
             "the fingerprint of a profile that sets no new field must not move"
         );
 
-        let serialized =
-            serde_json::to_value(&base).expect("criteria serialize for the fingerprint");
+        // The projection, not the source struct, is what the hash reads.
+        let serialized = serde_json::to_value(AcceptanceCriteria::from(&base))
+            .expect("criteria serialize for the fingerprint");
         assert!(
             serialized.get("cutoff_score").is_none(),
             "an unset `cutoff_score` must not appear in the fingerprint input at all"
         );
+        for ranking_key in [
+            "scoring_persona",
+            "scoring_overrides",
+            "facet_persona_overrides",
+            "atmos_preferred",
+            "prefer_remux",
+            "prefer_dual_audio",
+        ] {
+            assert!(
+                serialized.get(ranking_key).is_none(),
+                "{ranking_key} ranks results the scope already has; it must not reach the fingerprint"
+            );
+        }
 
         // …and a profile that *does* set it is genuinely a different profile.
         let mut with_cutoff = base.clone();
