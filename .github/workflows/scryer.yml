@@ -2362,7 +2362,7 @@ jobs:
 
   winget-submit:
     name: winget-submit
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') && vars.WINGET_AUTO_SUBMISSION_ENABLED == 'true' }}
     needs: [winget-published-install]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
