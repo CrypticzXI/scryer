@@ -763,39 +763,30 @@ impl AppUseCase {
 
 /// Whether the 24 h client-warning timeout may fail this download.
 ///
-/// Operator rule: the timeout applies only when **no seeding profile is
-/// attached** to the download. A torrent grabbed under a seeding profile (the
-/// indexer's, a Prowlarr-managed one, a routing entry's or the global default —
-/// anything the grab persisted with a resolution source) is governed by that
-/// profile's rules; failing and removing it after a day would expose private
-/// tracker users to hit-and-run penalties. Such a torrent keeps its warning for
-/// the operator and is never auto-failed here. Usenet downloads and torrents
-/// grabbed with no profile keep the timeout. Anything that is not a warned,
+/// **A torrent warning is never auto-failed** — Sonarr parity, and the reason
+/// is hit-and-run: a completed torrent can sit in `Warning` on a recoverable
+/// client condition (disk, permissions, a tracker hiccup), and manufacturing a
+/// `Failed` here removes its client entry through a path the seeding gate
+/// never sees — bypassing the private rail for exactly the torrents that have
+/// no profile to protect them. The gate holds on *unknown*; a timeout that
+/// fails on unknown is the opposite rule, and 8 of 13 clients cannot report
+/// privateness at all. The warning stays visible for the operator, who can
+/// resolve or replace the download; Sonarr's `FailedDownloadService` acts only
+/// on `Failed`/`IsEncrypted` and lets warnings persist the same way.
+///
+/// Usenet downloads keep the timeout. Anything that is not a warned,
 /// Scryer-origin download is irrelevant and reports `true` (the tracker then
 /// ignores it on its own checks).
-pub(crate) async fn warning_timeout_applies(
+pub(crate) fn warning_timeout_applies(
     app: &AppUseCase,
     td: &crate::tracked_downloads::TrackedDownload,
 ) -> bool {
     if td.client_item.state != scryer_domain::DownloadQueueState::Warning
         || !td.client_item.is_scryer_origin
-        || !crate::seeding_gate::client_type_is_torrent(app, &td.client_type)
     {
         return true;
     }
-    use crate::seeding_gate::{SeedGoalLookupKey, SeedGoalsRead};
-    let key = SeedGoalLookupKey {
-        canonical_download_id: td.canonical_download_id().cloned(),
-        client_id: td.client_id.trim().to_string(),
-        client_type: td.client_type.trim().to_string(),
-        client_item_id: td.client_item.download_client_item_id.trim().to_string(),
-        info_hash: crate::normalize_torrent_info_hash(Some(
-            td.client_item.download_client_item_id.as_str(),
-        )),
-    };
-    !app.resolved_seed_goals(&key, None)
-        .await
-        .is_some_and(|goals| goals.resolution_source != crate::SeedGoalResolutionSource::None)
+    !crate::seeding_gate::client_type_is_torrent(app, &td.client_type)
 }
 
 #[expect(
@@ -876,7 +867,7 @@ async fn process_tracked_download_snapshot(
         }
 
         let warning_timeout_applies = match runtime.tracker.find(&id) {
-            Some(td) => warning_timeout_applies(app, td).await,
+            Some(td) => warning_timeout_applies(app, td),
             None => true,
         };
         if runtime

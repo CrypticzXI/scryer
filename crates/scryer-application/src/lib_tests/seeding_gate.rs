@@ -350,10 +350,20 @@ async fn a_failed_torrent_is_removed_immediately_so_blocklisting_never_waits_on_
     );
 }
 
+/// Sonarr parity: a torrent warning is never auto-failed, profile or not.
+///
+/// This test used to pin the opposite for a profile-less torrent — timeout,
+/// FailedPending, client-failure cleanup. That path removed a client entry
+/// without the seeding gate ever seeing it: a completed torrent warned on a
+/// recoverable condition (disk full, permissions, a tracker hiccup) lost its
+/// entry after a day, bypassing the private rail for exactly the torrents that
+/// had no profile to protect them. The gate holds on unknown; the timeout must
+/// not fail on it. Sonarr's `FailedDownloadService` acts only on
+/// `Failed`/`IsEncrypted` and lets warnings persist for the operator.
 #[tokio::test]
-async fn a_timed_out_downloading_warning_uses_client_failure_cleanup() {
+async fn a_warned_torrent_without_a_profile_is_never_timed_out() {
     let download_client = Arc::new(StubDownloadClient::default());
-    // No seeding profile behind this grab, so the 24 h timeout applies.
+    // No seeding profile behind this grab — the case the old rule timed out.
     let (app, mut tracked) = torrent_cleanup_fixture(
         download_client.clone(),
         "Timed Out Downloading Warning",
@@ -365,42 +375,46 @@ async fn a_timed_out_downloading_warning_uses_client_failure_cleanup() {
     tracked.client_item.state = DownloadQueueState::Warning;
     tracked.client_item.attention_reason = Some("disk full".to_string());
     let id = tracked.id.clone();
-    assert!(crate::app_usecase_integration::warning_timeout_applies(&app, &tracked).await);
+    let timeout_applies = crate::app_usecase_integration::warning_timeout_applies(&app, &tracked);
+    assert!(
+        !timeout_applies,
+        "a torrent warning must never be auto-failed, with or without a profile"
+    );
     let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
     tracker.insert_for_tests(tracked);
     let now = chrono::Utc::now();
 
-    assert!(!tracker.fail_persistent_warning(&id, now, true));
-    assert!(tracker.fail_persistent_warning(
+    assert!(!tracker.fail_persistent_warning(&id, now, timeout_applies));
+    assert!(!tracker.fail_persistent_warning(
         &id,
-        now + crate::tracked_downloads::TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
-        true,
+        now + crate::tracked_downloads::TrackedDownloadService::WARNING_FAILURE_TIMEOUT * 3,
+        timeout_applies,
     ));
-    let mut timed_out = tracker.find(&id).expect("timed-out download").clone();
-    assert_eq!(timed_out.state, TrackedDownloadState::FailedPending);
-    assert!(!timed_out.burned_by_import_gate);
+    let still_warned = tracker.find(&id).expect("warned torrent");
+    assert_eq!(still_warned.state, TrackedDownloadState::Downloading);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+}
 
-    // The background failure worker publishes this terminal state; a payload
-    // that never completed does not owe a seeding obligation.
-    timed_out.state = TrackedDownloadState::Failed;
-    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
-        &app,
-        &timed_out,
-        TrackedDownloadState::Failed,
+/// Usenet keeps the 24 h warning timeout: no seeding obligation exists, and a
+/// stuck usenet download is exactly what failed-download handling is for.
+#[tokio::test]
+async fn a_warned_usenet_download_keeps_the_warning_timeout() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Warned Usenet Download",
+        "usenet-warning-1",
         None,
     )
     .await;
+    tracked.client_type = "sabnzbd".to_string();
+    tracked.state = TrackedDownloadState::Downloading;
+    tracked.client_item.state = DownloadQueueState::Warning;
+    tracked.client_item.attention_reason = Some("unpack failed".to_string());
 
-    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
-    assert_eq!(
-        download_client.deleted_requests.lock().await.clone(),
-        vec![(
-            Some(timed_out.client_id.clone()),
-            None,
-            "torrent-warning-downloading".to_string(),
-            true,
-            false,
-        )]
+    assert!(
+        crate::app_usecase_integration::warning_timeout_applies(&app, &tracked),
+        "usenet downloads keep the warning timeout"
     );
 }
 
@@ -669,8 +683,7 @@ async fn a_warned_torrent_under_a_seeding_profile_is_never_timed_out() {
     tracked.client_item.state = DownloadQueueState::Warning;
     tracked.client_item.attention_reason = Some("files are missing".to_string());
     let id = tracked.id.clone();
-    let timeout_applies =
-        crate::app_usecase_integration::warning_timeout_applies(&app, &tracked).await;
+    let timeout_applies = crate::app_usecase_integration::warning_timeout_applies(&app, &tracked);
     assert!(
         !timeout_applies,
         "a torrent grabbed under a seeding profile must not be subject to the warning timeout"
