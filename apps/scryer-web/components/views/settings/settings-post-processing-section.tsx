@@ -767,8 +767,8 @@ function EnvVarsReference() {
             onChange={ignoreEnvReferenceCodeChange}
             readOnly
             language="javascript"
-            minLines={19}
-            maxLines={19}
+            minLines={21}
+            maxLines={21}
           />
           <LazyCodeEditor
             id="settings-post-processing-env-variables-example"
@@ -776,8 +776,8 @@ function EnvVarsReference() {
             onChange={ignoreEnvReferenceCodeChange}
             readOnly
             language="shell"
-            minLines={6}
-            maxLines={6}
+            minLines={8}
+            maxLines={8}
           />
         </CardContent>
       ) : null}
