@@ -254,7 +254,7 @@
         "languages": true,
         "subtitles": false,
         "grabs": true,
-        "votes": false,
+        "votes": true,
         "comments": true,
         "info_url": true,
         "guid": true,
