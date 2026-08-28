@@ -1208,6 +1208,9 @@ impl BlocklistRepository for FailingBlocklistRepo {
     async fn list_all(&self, _: usize, _: usize) -> AppResult<(Vec<BlocklistEntry>, i64)> {
         Err(AppError::Repository("blocklist unavailable".to_string()))
     }
+    async fn get(&self, _: &str) -> AppResult<Option<BlocklistEntry>> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
     async fn is_blocked(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> AppResult<bool> {
         Err(AppError::Repository("blocklist unavailable".to_string()))
     }

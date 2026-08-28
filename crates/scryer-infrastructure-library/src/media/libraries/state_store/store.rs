@@ -2411,6 +2411,23 @@ impl BlocklistRepository for BlocklistStore {
         .await
     }
 
+    async fn get(&self, id: &str) -> AppResult<Option<BlocklistEntry>> {
+        let sql = format!(
+            "SELECT {BLOCKLIST_COLUMNS}
+               FROM blocklist
+              WHERE id = {{}}
+              LIMIT 1"
+        );
+        Ok(fetch_blocklist_entries(
+            self.datastore.read_exec(),
+            &sql,
+            &[SqlArg::Text(id.to_string())],
+        )
+        .await?
+        .into_iter()
+        .next())
+    }
+
     async fn remove(&self, id: &str) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,

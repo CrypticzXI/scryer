@@ -309,15 +309,12 @@ impl AppUseCase {
         actor: &User,
         id: &str,
     ) -> AppResult<()> {
-        let (entries, _) = self
+        let entry = self
             .services
             .workflow
             .blocklist_repo
-            .list_all(500, 0)
-            .await?;
-        let entry = entries
-            .into_iter()
-            .find(|entry| entry.id == id)
+            .get(id)
+            .await?
             .ok_or_else(|| AppError::NotFound(format!("blocklist entry {id}")))?;
         self.require_title_permission(
             actor,

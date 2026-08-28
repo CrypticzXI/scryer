@@ -3572,6 +3572,23 @@ pub struct IdentityTrackedStateTarget<'a> {
 pub trait DownloadSubmissionRepository: Send + Sync {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
 
+    /// The grab-time infohash of a submission for this title whose release
+    /// title normalizes to `normalized_release_name`, when one was recorded.
+    ///
+    /// The import-rejection path keys its blocklist row on this: a release
+    /// rejected on content is equally bad under any name, and the infohash is
+    /// the content identity. Name normalization happens in Rust (never SQL) so
+    /// the two engines cannot drift; matching any submission suffices because
+    /// one release name means one release means one hash. Defaults to `None`
+    /// so a store without the lookup degrades to a name-only block.
+    async fn find_info_hash_for_title_release(
+        &self,
+        _title_id: &str,
+        _normalized_release_name: &str,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     /// Persist a submit whose client may have accepted the mutation but did
     /// not return a native item identifier.
     async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
@@ -5207,6 +5224,11 @@ pub trait BlocklistRepository: Send + Sync {
     async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>>;
 
     async fn list_all(&self, limit: usize, offset: usize) -> AppResult<(Vec<BlocklistEntry>, i64)>;
+
+    /// One entry by id. The clear path resolves the entry this way for its
+    /// permission check — a paged scan over `list_all` would make entries past
+    /// the page silently unclearable.
+    async fn get(&self, id: &str) -> AppResult<Option<BlocklistEntry>>;
 
     /// Whether this release is already blocked for the title, using the same
     /// key [`BlocklistRepository::block`] writes.
