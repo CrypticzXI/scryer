@@ -2108,6 +2108,10 @@ impl SettingsMutations {
     ) -> GqlResult<CreateMyApiKeyPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = api_key_management_actor_from_ctx(ctx)?;
+        let mfa = mfa_verification_from_ctx(ctx);
+        app.require_api_key_mfa_step_up(&actor, mfa.step_up_verified_until)
+            .await
+            .map_err(to_gql_error)?;
         let expiry = match input.expiry.unwrap_or(ApiKeyExpiryPresetValue::Days90) {
             ApiKeyExpiryPresetValue::Days30 => AppApiKeyExpiryPreset::Days30,
             ApiKeyExpiryPresetValue::Days90 => AppApiKeyExpiryPreset::Days90,
