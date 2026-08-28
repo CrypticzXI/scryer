@@ -3188,6 +3188,8 @@ const en: LocaleDictionary = {
     "Full backup bundles include instance secrets and must be encrypted.",
   "settings.backupsQueued": "Backup creation started in the background.",
   "settings.backupsDeleted": "Backup deleted.",
+  "settings.backupsDeletedCount": "Deleted {{count}} backup(s).",
+  "settings.backupsDeleteFailedCount": "Failed to delete {{count}} backup(s).",
   "settings.backupsCreating": "Creating",
   "settings.backupsReady": "Ready",
   "settings.backupsInvalid": "Invalid",
@@ -3200,6 +3202,12 @@ const en: LocaleDictionary = {
   "settings.backupsDelete": "Delete",
   "settings.backupsDeleteConfirm":
     "Delete this backup bundle from the server? Any downloaded copy will be unaffected.",
+  "settings.backupsDeleteSelected": "Delete selected",
+  "settings.backupsDeleteSelectedConfirm":
+    "Delete {{count}} selected backup bundles from the server? Any downloaded copies will be unaffected.",
+  "settings.backupsSelectedCount": "{{count}} selected",
+  "settings.backupsSelect": "Select {{name}}",
+  "settings.backupsSelectAll": "Select all backups",
   "settings.unsavedBackupChangesTitle": "Unsaved backup settings",
   "settings.unsavedBackupChangesConfirm":
     "You have unsaved backup settings changes. Leave without saving?",
@@ -3222,6 +3230,7 @@ const en: LocaleDictionary = {
   "settings.recycleBinReason": "Reason",
   "settings.recycleBinSize": "Size",
   "settings.recycleBinRecycled": "Recycled",
+  "settings.recycleBinScheduledDeletion": "Scheduled deletion",
   "settings.recycleBinFilterPlaceholder": "Filter by file or title name",
   "settings.recycleBinFilterAria": "Filter recycle-bin files by file or title name",
   "settings.recycleBinSelectedCount": "{{count}} selected",

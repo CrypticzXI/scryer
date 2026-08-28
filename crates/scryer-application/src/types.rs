@@ -148,6 +148,7 @@ pub struct RecycledItem {
     pub title_name: Option<String>,
     pub reason: String,
     pub recycled_at: String,
+    pub scheduled_deletion_at: String,
     pub media_root: String,
     pub library_id: String,
     pub library_name: String,

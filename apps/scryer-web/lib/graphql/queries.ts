@@ -3301,6 +3301,7 @@ export const recycledItemsQuery = `query RecycledItems($libraryIds: [ID!]) {
       titleName
       reason
       recycledAt
+      scheduledDeletionAt
       mediaRoot
       libraryId
       libraryName

@@ -161,12 +161,20 @@ fn recycled_item_from_entry(
     entry: crate::recycle_bin::RecycleEntry,
     library: &RecycleEntryLibrary,
     title_name: Option<String>,
+    retention_days: u32,
 ) -> RecycledItem {
     let original_path = entry.manifest.original_path_buf();
     let file_name = original_path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
+    let scheduled_deletion_at = chrono::DateTime::parse_from_rfc3339(&entry.manifest.recycled_at)
+        .map(|recycled_at| {
+            (recycled_at.with_timezone(&chrono::Utc)
+                + chrono::Duration::days(i64::from(retention_days)))
+            .to_rfc3339()
+        })
+        .unwrap_or_else(|_| entry.manifest.recycled_at.clone());
 
     RecycledItem {
         id: entry.entry_id,
@@ -177,6 +185,7 @@ fn recycled_item_from_entry(
         title_name,
         reason: entry.manifest.reason,
         recycled_at: entry.manifest.recycled_at,
+        scheduled_deletion_at,
         media_root: entry.media_root,
         library_id: library.id.clone(),
         library_name: library.name.clone(),
@@ -908,17 +917,18 @@ impl AppUseCase {
         let mut list_tasks = tokio::task::JoinSet::new();
         for (media_root, config) in self.resolve_all_recycle_configs().await {
             list_tasks.spawn(async move {
+                let retention_days = config.retention_days;
                 let entries = crate::recycle_bin::list_entries(&config, &media_root).await;
-                (media_root, entries)
+                (media_root, retention_days, entries)
             });
         }
 
         while let Some(result) = list_tasks.join_next().await {
             match result {
-                Ok((_media_root, Ok(entries))) => {
-                    all_entries.extend(entries);
+                Ok((_media_root, retention_days, Ok(entries))) => {
+                    all_entries.extend(entries.into_iter().map(|entry| (entry, retention_days)));
                 }
-                Ok((media_root, Err(e))) => {
+                Ok((media_root, _, Err(e))) => {
                     info!(error = %e, media_root = %media_root, "failed to list recycle entries")
                 }
                 Err(error) => {
@@ -929,14 +939,14 @@ impl AppUseCase {
 
         let mut title_ids = all_entries
             .iter()
-            .filter_map(|entry| entry.manifest.title_id.clone())
+            .filter_map(|(entry, _)| entry.manifest.title_id.clone())
             .collect::<Vec<_>>();
         title_ids.sort();
         title_ids.dedup();
         let titles_by_id = self.recycle_entry_titles_by_id(title_ids).await?;
 
         let mut items = Vec::new();
-        for entry in all_entries {
+        for (entry, retention_days) in all_entries {
             let title = entry
                 .manifest
                 .title_id
@@ -954,6 +964,7 @@ impl AppUseCase {
                     entry,
                     &library,
                     title.map(|(_, title_name)| title_name.clone()),
+                    retention_days,
                 ));
             }
         }

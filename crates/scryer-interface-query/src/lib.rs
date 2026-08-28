@@ -2667,6 +2667,11 @@ impl SystemQueries {
                         "recycled item recycled_at",
                     )
                     .map_err(to_gql_error)?,
+                    scheduled_deletion_at: parse_required_datetime(
+                        &item.scheduled_deletion_at,
+                        "recycled item scheduled_deletion_at",
+                    )
+                    .map_err(to_gql_error)?,
                     media_root: item.media_root,
                     library_id: ID::from(item.library_id),
                     library_name: item.library_name,
