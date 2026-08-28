@@ -212,6 +212,16 @@ impl BlocklistRepository for MockBlocklistRepo {
         Ok((page, total))
     }
 
+    async fn get(&self, id: &str) -> AppResult<Option<BlocklistEntry>> {
+        Ok(self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned())
+    }
+
     async fn is_blocked(
         &self,
         title_id: &str,

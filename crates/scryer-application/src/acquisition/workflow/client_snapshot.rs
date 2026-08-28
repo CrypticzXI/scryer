@@ -692,7 +692,21 @@ fn preferred_failed_release_title(
 ) -> Option<String> {
     failed_submission
         .and_then(|submission| normalized_non_empty_owned(submission.source_title.clone()))
-        .or_else(|| normalized_non_empty_owned(Some(context.release_title.clone())))
+        .or_else(|| {
+            // Client-echoed fallback only, never the grab-time name: SABnzbd
+            // reports `<release>.nzb`, and a blocklist row keyed on that suffix
+            // can never match a search-time candidate name.
+            normalized_non_empty_owned(Some(strip_nzb_suffix(&context.release_title).to_string()))
+        })
+}
+
+/// One trailing `.nzb`, ASCII case-insensitive, off a client-reported name.
+fn strip_nzb_suffix(release_title: &str) -> &str {
+    let trimmed = release_title.trim_end();
+    trimmed
+        .get(trimmed.len().saturating_sub(4)..)
+        .filter(|suffix| suffix.eq_ignore_ascii_case(".nzb"))
+        .map_or(trimmed, |_| &trimmed[..trimmed.len() - 4])
 }
 async fn resolve_failed_pack_episode_wanted_items(
     app: &AppUseCase,
@@ -1989,5 +2003,25 @@ mod client_snapshot_tests {
         // No tracked row: the client is the only witness.
         assert!(submission_is_queued(None, true));
         assert!(!submission_is_queued(None, false));
+    }
+
+    /// The client-echoed fallback name must shed SABnzbd's `.nzb` suffix, or
+    /// the blocklist row it keys can never match a search-time candidate.
+    #[test]
+    fn client_echoed_fallback_sheds_a_trailing_nzb_suffix() {
+        assert_eq!(
+            strip_nzb_suffix("Show.S01E01.1080p.WEB-DL.nzb"),
+            "Show.S01E01.1080p.WEB-DL"
+        );
+        assert_eq!(
+            strip_nzb_suffix("Show.S01E01.1080p.WEB-DL.NZB"),
+            "Show.S01E01.1080p.WEB-DL"
+        );
+        // Only a suffix is shed, exactly once, and only when present.
+        assert_eq!(strip_nzb_suffix("Show.S01E01.1080p.WEB-DL"), "Show.S01E01.1080p.WEB-DL");
+        assert_eq!(strip_nzb_suffix("Show.nzb.S01E01"), "Show.nzb.S01E01");
+        assert_eq!(strip_nzb_suffix("Show.nzb.nzb"), "Show.nzb");
+        assert_eq!(strip_nzb_suffix(".nzb"), "");
+        assert_eq!(strip_nzb_suffix("nzb"), "nzb");
     }
 }

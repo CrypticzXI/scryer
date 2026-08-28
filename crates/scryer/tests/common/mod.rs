@@ -506,6 +506,10 @@ impl BlocklistRepository for TestLibraryStateStore {
             .await
     }
 
+    async fn get(&self, id: &str) -> AppResult<Option<scryer_domain::BlocklistEntry>> {
+        self.blocklist.get(id).await
+    }
+
     async fn remove(&self, id: &str) -> AppResult<()> {
         self.blocklist.remove(id).await
     }

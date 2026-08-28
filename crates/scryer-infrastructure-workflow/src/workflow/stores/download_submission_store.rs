@@ -315,6 +315,35 @@ fn canonical_tracked_state_key(canonical_download_id: &DownloadId) -> String {
 
 #[async_trait]
 impl DownloadSubmissionRepository for DownloadSubmissionStore {
+    async fn find_info_hash_for_title_release(
+        &self,
+        title_id: &str,
+        normalized_release_name: &str,
+    ) -> AppResult<Option<String>> {
+        // The name comparison happens here rather than in SQL: SQLite's LOWER
+        // is ASCII-only while Postgres' lower() is locale-aware, and the
+        // blocklist key this feeds is normalized in Rust. Any matching
+        // submission serves — one release name is one release is one hash.
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT source_title, info_hash
+               FROM download_submissions
+              WHERE title_id = {} AND info_hash IS NOT NULL AND source_title IS NOT NULL
+              LIMIT 200",
+            &[SqlArg::Text(title_id.to_string())],
+        )
+        .await?;
+        for row in rows {
+            let source_title = row.opt_text("source_title")?;
+            if scryer_application::normalize_release_name(source_title.as_deref())
+                .is_some_and(|name| name == normalized_release_name)
+            {
+                return Ok(row.opt_text("info_hash")?);
+            }
+        }
+        Ok(None)
+    }
+
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
         run_in_transaction_retrying_unique_violation(
             &self.datastore,
@@ -1518,6 +1547,7 @@ mod seed_goal_tests {
                  download_client_type TEXT NOT NULL,
                  download_client_item_id TEXT,
                  source_title TEXT,
+                 info_hash TEXT,
                  release_size_bytes INTEGER,
                  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
                  collection_id TEXT,
@@ -2120,6 +2150,54 @@ mod seed_goal_tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].download_id, canonical_download_id);
         assert_eq!(resolved[0].title_id, "title-canonical");
+    }
+
+    /// The import-rejection blocklist writer resolves the grab-time infohash
+    /// through this lookup. The name comparison is Rust normalization, never
+    /// SQL, so a differently-cased release title still matches — and a title
+    /// with no matching submission degrades to `None`, a name-only block.
+    #[tokio::test]
+    async fn title_release_lookup_resolves_the_grab_time_infohash() {
+        let store = store().await;
+        SqlRuntime::execute(
+            store.datastore.read_exec(),
+            "INSERT INTO download_submissions (
+                id, title_id, facet, download_client_id, download_client_type,
+                source_title, info_hash
+             ) VALUES ({}, {}, {}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text("submission-hash".to_string()),
+                SqlArg::Text("title-hash".to_string()),
+                SqlArg::Text("series".to_string()),
+                SqlArg::Text("primary".to_string()),
+                SqlArg::Text("qbittorrent".to_string()),
+                SqlArg::Text("Show.S01E01.1080p.WEB-DL".to_string()),
+                SqlArg::Text("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            ],
+        )
+        .await
+        .expect("submission fixture should insert");
+
+        let matched = store
+            .find_info_hash_for_title_release("title-hash", "show.s01e01.1080p.web-dl")
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(
+            matched.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+
+        let other_title = store
+            .find_info_hash_for_title_release("title-other", "show.s01e01.1080p.web-dl")
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(other_title, None, "the hash is scoped to its title");
+
+        let other_name = store
+            .find_info_hash_for_title_release("title-hash", "other.release.name")
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(other_name, None, "an unmatched name is a name-only block");
     }
 
     #[tokio::test]

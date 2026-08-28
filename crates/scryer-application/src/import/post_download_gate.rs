@@ -1343,6 +1343,12 @@ pub(crate) struct BlocklistAttribution<'a> {
 /// No indexer is recorded. A release rejected here failed on its *content* --
 /// it is not what it advertised -- so it is equally bad whoever served it, and
 /// the empty indexer blocks it on all of them.
+///
+/// The same content argument keys the row on the grab-time infohash when the
+/// title has a submission for this release name: a content-bad torrent is the
+/// same bad content under any name on any indexer, and the hash is the one key
+/// that follows it there. The lookup degrading to `None` degrades the block to
+/// the name, which was the whole behaviour before the hash existed.
 pub(crate) async fn blocklist_release_for_title(
     app: &AppUseCase,
     title: &Title,
@@ -1352,6 +1358,21 @@ pub(crate) async fn blocklist_release_for_title(
     let Some(release_name) = normalize_release_name(Some(release_title)) else {
         return;
     };
+    let info_hash = app
+        .services
+        .workflow
+        .download_submissions
+        .find_info_hash_for_title_release(&title.id, &release_name)
+        .await
+        .unwrap_or_else(|error| {
+            warn!(
+                error = %error,
+                title_id = %title.id,
+                release_name = release_name.as_str(),
+                "failed to resolve grab-time infohash for rejected import; blocking by name only"
+            );
+            None
+        });
     if let Err(error) = app
         .services
         .workflow
@@ -1360,7 +1381,7 @@ pub(crate) async fn blocklist_release_for_title(
             title_id: title.id.clone(),
             release_name: release_name.clone(),
             indexer_id: String::new(),
-            info_hash: None,
+            info_hash,
             reason,
         })
         .await

@@ -2203,6 +2203,9 @@ impl BlocklistRepository for NullBlocklistRepository {
     async fn list_all(&self, _: usize, _: usize) -> AppResult<(Vec<BlocklistEntry>, i64)> {
         Ok((vec![], 0))
     }
+    async fn get(&self, _: &str) -> AppResult<Option<BlocklistEntry>> {
+        Ok(None)
+    }
     async fn is_blocked(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> AppResult<bool> {
         Ok(false)
     }
