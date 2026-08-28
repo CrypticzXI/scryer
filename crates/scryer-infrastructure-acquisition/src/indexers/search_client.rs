@@ -2536,6 +2536,9 @@ impl MultiIndexerSearchClient {
             .then_some("season".to_string());
         caps.episode_param =
             node_supports_param(snapshot.tv_search.as_ref(), "ep").then_some("ep".to_string());
+        if matches!(transport_kind, Some(NabTransportKind::DirectNab)) {
+            preserve_direct_nab_native_capabilities(&mut caps, static_caps, id_facet);
+        }
 
         let id_dispatch_mode = if caps.has_facet(id_facet) {
             IdDispatchMode::Aggregate
@@ -3747,7 +3750,12 @@ impl IndexerClient for MultiIndexerSearchClient {
             {
                 info!(
                     indexer = config.name.as_str(),
-                    reason, "ProwlarrNabProxy running in query-only fallback mode"
+                    transport = resolved_caps
+                        .transport_kind
+                        .map(NabTransportKind::as_str)
+                        .unwrap_or("unknown"),
+                    reason,
+                    "NAB indexer running in query-only fallback mode"
                 );
             }
 
@@ -5379,6 +5387,53 @@ fn supported_external_ids_from_caps_snapshot(snapshot: &IndexerCapsSnapshot) -> 
     ids.sort();
     ids.dedup();
     ids
+}
+
+fn preserve_direct_nab_native_capabilities(
+    caps: &mut IndexerProviderCapabilities,
+    static_caps: &IndexerProviderCapabilities,
+    facet: &str,
+) {
+    let native_ids = static_caps
+        .supported_ids
+        .get(facet)
+        .into_iter()
+        .flatten()
+        .filter(|id| !matches!(id.as_str(), "imdb_id" | "tvdb_id" | "tmdb_id"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if native_ids.is_empty() {
+        return;
+    }
+
+    let supported_ids = caps.supported_ids.entry(facet.to_string()).or_default();
+    for id in native_ids {
+        if !supported_ids.contains(&id) {
+            supported_ids.push(id.clone());
+        }
+        if !caps.supported_external_ids.contains(&id) {
+            caps.supported_external_ids.push(id);
+        }
+    }
+
+    for input in [
+        IndexerSearchInputCapability::IdQuery,
+        IndexerSearchInputCapability::AggregateIdQuery,
+        IndexerSearchInputCapability::Season,
+        IndexerSearchInputCapability::Episode,
+        IndexerSearchInputCapability::AbsoluteEpisode,
+    ] {
+        if static_caps.search_inputs.contains(&input) && !caps.search_inputs.contains(&input) {
+            caps.search_inputs.push(input);
+        }
+    }
+
+    if caps.season_param.is_none() {
+        caps.season_param.clone_from(&static_caps.season_param);
+    }
+    if caps.episode_param.is_none() {
+        caps.episode_param.clone_from(&static_caps.episode_param);
+    }
 }
 
 fn text_dispatch_mode_for_static(
@@ -7980,6 +8035,144 @@ mod tests {
                 ("tmdb_id".to_string(), "220067".to_string()),
             ])
         );
+    }
+
+    #[test]
+    fn direct_nab_caps_preserve_provider_native_ids_and_structured_inputs() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "animetosho-xyz".into();
+        config.caps_snapshot_json = Some(
+            serde_json::to_string(&prowlarr_caps_snapshot(&["q"], &["q"]))
+                .expect("serialize direct caps snapshot"),
+        );
+        let mut static_caps = anime_caps();
+        static_caps
+            .supported_ids
+            .insert("anime".into(), vec!["anidb_id".into(), "tvdb_id".into()]);
+        static_caps.search_inputs = vec![
+            IndexerSearchInputCapability::TitleQuery,
+            IndexerSearchInputCapability::IdQuery,
+            IndexerSearchInputCapability::AggregateIdQuery,
+            IndexerSearchInputCapability::Season,
+            IndexerSearchInputCapability::Episode,
+            IndexerSearchInputCapability::AbsoluteEpisode,
+        ];
+
+        let resolved = MultiIndexerSearchClient::resolve_search_capabilities(
+            &config,
+            &static_caps,
+            "anime",
+            "anime",
+        );
+
+        assert_eq!(resolved.id_dispatch_mode, IdDispatchMode::Aggregate);
+        assert_eq!(
+            resolved.caps.supported_ids.get("anime"),
+            Some(&vec!["anidb_id".to_string()])
+        );
+        assert_eq!(resolved.caps.season_param.as_deref(), Some("season"));
+        assert_eq!(resolved.caps.episode_param.as_deref(), Some("ep"));
+        assert!(
+            resolved
+                .caps
+                .search_inputs
+                .contains(&IndexerSearchInputCapability::AbsoluteEpisode)
+        );
+
+        let ids = HashMap::from([("anidb_id".to_string(), "1535".to_string())]);
+        let strategies = build_strategies(&StrategyParams {
+            query: "Synthetic Animation S02E03",
+            query_facet: "anime",
+            id_facet: "anime",
+            ids: &ids,
+            season: Some(2),
+            episode: Some(3),
+            absolute_episode: Some(21),
+            caps: &resolved.caps,
+            id_dispatch_mode: resolved.id_dispatch_mode,
+            text_dispatch_mode: resolved.text_dispatch_mode,
+            is_alias_query: false,
+        });
+        assert!(strategies.iter().any(|strategy| {
+            strategy.label == "ids_sxex"
+                && strategy.ids == ids
+                && strategy.season == Some(2)
+                && strategy.episode == Some(3)
+        }));
+        assert!(strategies.iter().any(|strategy| {
+            strategy.label == "ids_abs"
+                && strategy.ids == ids
+                && strategy.absolute_episode == Some(21)
+        }));
+    }
+
+    #[test]
+    fn direct_amenzb_caps_preserve_native_anidb_and_hash_ids() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "amenzb".into();
+        config.caps_snapshot_json = Some(
+            serde_json::to_string(&prowlarr_caps_snapshot(&["q"], &["q"]))
+                .expect("serialize direct caps snapshot"),
+        );
+        let mut static_caps = anime_caps();
+        static_caps.supported_ids.insert(
+            "anime".into(),
+            vec![
+                "anidb_id".into(),
+                "anidb".into(),
+                "tvdb_id".into(),
+                "info_hash".into(),
+                "info_hash_v1".into(),
+                "btih".into(),
+            ],
+        );
+
+        let resolved = MultiIndexerSearchClient::resolve_search_capabilities(
+            &config,
+            &static_caps,
+            "anime",
+            "anime",
+        );
+
+        assert_eq!(resolved.id_dispatch_mode, IdDispatchMode::Aggregate);
+        assert_eq!(
+            resolved.caps.supported_ids.get("anime"),
+            Some(&vec![
+                "anidb_id".to_string(),
+                "anidb".to_string(),
+                "info_hash".to_string(),
+                "info_hash_v1".to_string(),
+                "btih".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn managed_nab_caps_do_not_preserve_provider_native_ids() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q"], &["q"]),
+        )));
+        let mut static_caps = anime_caps();
+        static_caps.search_inputs = vec![
+            IndexerSearchInputCapability::IdQuery,
+            IndexerSearchInputCapability::Season,
+            IndexerSearchInputCapability::Episode,
+        ];
+
+        let resolved = MultiIndexerSearchClient::resolve_search_capabilities(
+            &config,
+            &static_caps,
+            "anime",
+            "anime",
+        );
+
+        assert_eq!(resolved.id_dispatch_mode, IdDispatchMode::QueryOnly);
+        assert!(resolved.caps.supported_ids.is_empty());
+        assert_eq!(resolved.caps.season_param, None);
+        assert_eq!(resolved.caps.episode_param, None);
     }
 
     #[tokio::test]
