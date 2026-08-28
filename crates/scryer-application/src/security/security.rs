@@ -1,7 +1,5 @@
 use std::time::{Duration as StdDuration, Instant};
 
-use argon2::password_hash::SaltString;
-use argon2::password_hash::rand_core::OsRng;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use aws_lc_rs::hmac;
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
@@ -100,10 +98,9 @@ impl AppUseCase {
             return Err(AppError::Validation("password is required".into()));
         }
 
-        let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let phc_string = argon2
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.as_bytes())
             .map_err(|err| AppError::Repository(format!("password hashing failed: {err}")))?
             .to_string();
         Ok(format!("v2${phc_string}"))

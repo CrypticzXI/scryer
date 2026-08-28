@@ -77,6 +77,7 @@ fn test_descriptor_json(
             scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),
+                provider_profiles: Vec::new(),
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Generic,
                 capabilities: Default::default(),
                 scoring_policies: Vec::new(),
@@ -91,6 +92,7 @@ fn test_descriptor_json(
             scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),
+                provider_profiles: Vec::new(),
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Usenet,
                 capabilities: Default::default(),
                 scoring_policies: Vec::new(),
@@ -105,6 +107,7 @@ fn test_descriptor_json(
             scryer_plugin_sdk::ProviderDescriptor::Indexer(scryer_plugin_sdk::IndexerDescriptor {
                 provider_type: provider_type.to_string(),
                 provider_aliases: Vec::new(),
+                provider_profiles: Vec::new(),
                 source_kind: scryer_plugin_sdk::IndexerSourceKind::Torrent,
                 capabilities: Default::default(),
                 scoring_policies: Vec::new(),

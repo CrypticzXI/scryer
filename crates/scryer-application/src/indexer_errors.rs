@@ -147,13 +147,11 @@ fn newznab_error_code(body: &[u8]) -> Option<u16> {
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(element)) | Ok(Event::Empty(element))
-                if element.name().as_ref().eq_ignore_ascii_case(b"error") =>
+                if element.name().as_ref().eq_ignore_ascii_case("error") =>
             {
                 for attribute in element.attributes().flatten() {
-                    if attribute.key.as_ref().eq_ignore_ascii_case(b"code") {
-                        return std::str::from_utf8(attribute.value.as_ref())
-                            .ok()
-                            .and_then(|value| value.parse().ok());
+                    if attribute.key.as_ref().eq_ignore_ascii_case("code") {
+                        return attribute.value.parse().ok();
                     }
                 }
                 return None;

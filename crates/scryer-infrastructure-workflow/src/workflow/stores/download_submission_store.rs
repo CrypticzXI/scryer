@@ -338,7 +338,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             if scryer_application::normalize_release_name(source_title.as_deref())
                 .is_some_and(|name| name == normalized_release_name)
             {
-                return Ok(row.opt_text("info_hash")?);
+                return row.opt_text("info_hash");
             }
         }
         Ok(None)

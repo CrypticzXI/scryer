@@ -1514,6 +1514,17 @@ file = "postgres/migrations/0195_application_migrations.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 196
+description = "refresh title catalog sort keys for ICU 2 3"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_catalog_sort_keys"
+engine = "all"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

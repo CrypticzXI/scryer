@@ -924,7 +924,7 @@ fn plex_server_users(users_xml: &str, search: Option<&str>) -> AppResult<Vec<Ple
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
-                if element.name().as_ref() != b"User" {
+                if element.name().as_ref() != "User" {
                     continue;
                 }
                 let mut id = None;
@@ -947,11 +947,11 @@ fn plex_server_users(users_xml: &str, search: Option<&str>) -> AppResult<Vec<Ple
                         continue;
                     }
                     match attribute.key.as_ref() {
-                        b"id" => id = Some(value),
-                        b"username" => username = Some(value),
-                        b"title" => title = Some(value),
-                        b"email" => email = Some(value),
-                        b"thumb" => thumb = Some(value),
+                        "id" => id = Some(value),
+                        "username" => username = Some(value),
+                        "title" => title = Some(value),
+                        "email" => email = Some(value),
+                        "thumb" => thumb = Some(value),
                         _ => {}
                     }
                 }
@@ -1017,7 +1017,7 @@ fn plex_server_discoveries(resources_xml: &str) -> AppResult<Vec<PlexServerDisco
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
-                if element.name().as_ref() == b"Device"
+                if element.name().as_ref() == "Device"
                     && let Some(device) = parse_plex_device(&element)?
                 {
                     servers.push(device.into_discovery());
@@ -1077,10 +1077,10 @@ fn parse_plex_device(
             continue;
         }
         match attribute.key.as_ref() {
-            b"machineIdentifier" | b"clientIdentifier" => machine_id = Some(value),
-            b"name" => name = Some(value),
-            b"product" => product = Some(value),
-            b"provides" => provides = Some(value),
+            "machineIdentifier" | "clientIdentifier" => machine_id = Some(value),
+            "name" => name = Some(value),
+            "product" => product = Some(value),
+            "provides" => provides = Some(value),
             _ => {}
         }
     }
@@ -1112,7 +1112,7 @@ fn plex_resources_include_machine(resources_xml: &str, machine_id: &str) -> AppR
                     })?;
                     if matches!(
                         attribute.key.as_ref(),
-                        b"machineIdentifier" | b"clientIdentifier"
+                        "machineIdentifier" | "clientIdentifier"
                     ) {
                         let value = attribute
                             .normalized_value(XmlVersion::Implicit1_0)
@@ -1648,11 +1648,11 @@ fn plex_server_url(resources_xml: &str, machine_id: &str) -> AppResult<Option<St
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => {
-                if element.name().as_ref() == b"Device" {
+                if element.name().as_ref() == "Device" {
                     selected = element.attributes().flatten().any(|attribute| {
                         matches!(
                             attribute.key.as_ref(),
-                            b"machineIdentifier" | b"clientIdentifier"
+                            "machineIdentifier" | "clientIdentifier"
                         ) && attribute
                             .normalized_value(XmlVersion::Implicit1_0)
                             .ok()
@@ -1660,11 +1660,11 @@ fn plex_server_url(resources_xml: &str, machine_id: &str) -> AppResult<Option<St
                             == Some(machine_id)
                     });
                 } else if selected
-                    && element.name().as_ref() == b"Connection"
+                    && element.name().as_ref() == "Connection"
                     && let Some(uri) = element
                         .attributes()
                         .flatten()
-                        .find(|attribute| attribute.key.as_ref() == b"uri")
+                        .find(|attribute| attribute.key.as_ref() == "uri")
                         .and_then(|attribute| {
                             attribute.normalized_value(XmlVersion::Implicit1_0).ok()
                         })
@@ -1673,18 +1673,18 @@ fn plex_server_url(resources_xml: &str, machine_id: &str) -> AppResult<Option<St
                     uris.push(uri);
                 }
             }
-            Ok(Event::Empty(element)) if selected && element.name().as_ref() == b"Connection" => {
+            Ok(Event::Empty(element)) if selected && element.name().as_ref() == "Connection" => {
                 if let Some(uri) = element
                     .attributes()
                     .flatten()
-                    .find(|attribute| attribute.key.as_ref() == b"uri")
+                    .find(|attribute| attribute.key.as_ref() == "uri")
                     .and_then(|attribute| attribute.normalized_value(XmlVersion::Implicit1_0).ok())
                     .map(|value| value.into_owned())
                 {
                     uris.push(uri);
                 }
             }
-            Ok(Event::End(element)) if element.name().as_ref() == b"Device" => selected = false,
+            Ok(Event::End(element)) if element.name().as_ref() == "Device" => selected = false,
             Ok(Event::Eof) => {
                 let https_uri = uris.iter().find(|uri| uri.starts_with("https://")).cloned();
                 return Ok(https_uri.or_else(|| uris.into_iter().next()));

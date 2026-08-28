@@ -940,7 +940,7 @@ fn prowlarr_xml_error_description(body: &[u8]) -> Option<String> {
     loop {
         match reader.read_event_into(&mut buffer).ok()? {
             Event::Start(element) | Event::Empty(element) => {
-                if element.name().as_ref() != b"error" {
+                if element.name().as_ref() != "error" {
                     return None;
                 }
 
@@ -949,13 +949,13 @@ fn prowlarr_xml_error_description(body: &[u8]) -> Option<String> {
                 for attribute in element.attributes() {
                     let attribute = attribute.ok()?;
                     let value = attribute
-                        .decoded_and_normalized_value(XmlVersion::Explicit1_0, reader.decoder())
+                        .normalized_value(XmlVersion::Explicit1_0)
                         .ok()?
                         .trim()
                         .to_string();
                     match attribute.key.as_ref() {
-                        b"code" => code = Some(value),
-                        b"description" => description = (!value.is_empty()).then_some(value),
+                        "code" => code = Some(value),
+                        "description" => description = (!value.is_empty()).then_some(value),
                         _ => {}
                     }
                 }

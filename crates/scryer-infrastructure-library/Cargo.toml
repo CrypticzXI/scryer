@@ -32,7 +32,7 @@ tracing = { workspace = true }
 unicode-normalization = "0.1"
 url = "2"
 uuid = { workspace = true }
-zune-core = { version = "=0.5.1", optional = true }
+zune-core = { version = "=0.5.3", optional = true }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
 ravif = { version = "0.13", default-features = false, features = ["threading"], optional = true }

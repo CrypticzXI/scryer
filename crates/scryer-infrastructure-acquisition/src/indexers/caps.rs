@@ -522,37 +522,37 @@ pub fn parse_caps_snapshot_xml(body: &[u8]) -> AppResult<IndexerCapsSnapshot> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
                 match element.name().as_ref() {
-                    b"server" => {
-                        snapshot.server_title = attr_value(&element, b"title")?;
+                    "server" => {
+                        snapshot.server_title = attr_value(&element, "title")?;
                     }
-                    b"limits" => {
-                        snapshot.limits_default = attr_i64(&element, b"default")?;
-                        snapshot.limits_max = attr_i64(&element, b"max")?;
+                    "limits" => {
+                        snapshot.limits_default = attr_i64(&element, "default")?;
+                        snapshot.limits_max = attr_i64(&element, "max")?;
                     }
-                    b"search" => {
+                    "search" => {
                         snapshot.search = Some(parse_caps_node(&element)?);
                     }
-                    b"tv-search" => {
+                    "tv-search" => {
                         snapshot.tv_search = Some(parse_caps_node(&element)?);
                     }
-                    b"movie-search" => {
+                    "movie-search" => {
                         snapshot.movie_search = Some(parse_caps_node(&element)?);
                     }
-                    b"music-search" => {
+                    "music-search" => {
                         snapshot.music_search = Some(parse_caps_node(&element)?);
                     }
-                    b"audio-search" => {
+                    "audio-search" => {
                         snapshot.audio_search = Some(parse_caps_node(&element)?);
                     }
-                    b"book-search" => {
+                    "book-search" => {
                         snapshot.book_search = Some(parse_caps_node(&element)?);
                     }
-                    b"category" | b"subcat" => {
-                        if let Some(id) = attr_value(&element, b"id")?
+                    "category" | "subcat" => {
+                        if let Some(id) = attr_value(&element, "id")?
                             .map(|value| value.trim().to_string())
                             .filter(|value| !value.is_empty())
                         {
-                            let label = attr_value(&element, b"name")?
+                            let label = attr_value(&element, "name")?
                                 .map(|value| value.trim().to_string())
                                 .filter(|value| !value.is_empty());
                             categories
@@ -598,22 +598,22 @@ pub fn parse_caps_snapshot_xml(body: &[u8]) -> AppResult<IndexerCapsSnapshot> {
 
 fn parse_caps_node(element: &BytesStart<'_>) -> AppResult<IndexerCapsSearchNode> {
     Ok(IndexerCapsSearchNode {
-        available: attr_value(element, b"available")?
+        available: attr_value(element, "available")?
             .is_some_and(|value| value.eq_ignore_ascii_case("yes")),
-        supported_params: attr_value(element, b"supportedParams")?
+        supported_params: attr_value(element, "supportedParams")?
             .unwrap_or_default()
             .split(',')
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_ascii_lowercase())
             .collect(),
-        search_engine: attr_value(element, b"searchEngine")?
+        search_engine: attr_value(element, "searchEngine")?
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
     })
 }
 
-fn attr_value(element: &BytesStart<'_>, key: &[u8]) -> AppResult<Option<String>> {
+fn attr_value(element: &BytesStart<'_>, key: &str) -> AppResult<Option<String>> {
     for attribute in element.attributes().with_checks(false) {
         let attribute = attribute.map_err(|error| {
             AppError::Repository(format!(
@@ -621,19 +621,14 @@ fn attr_value(element: &BytesStart<'_>, key: &[u8]) -> AppResult<Option<String>>
             ))
         })?;
         if attribute.key.as_ref() == key {
-            let value = std::str::from_utf8(attribute.value.as_ref()).map_err(|error| {
-                AppError::Repository(format!(
-                    "indexer returned non-UTF8 caps attribute values: {error}"
-                ))
-            })?;
-            return Ok(Some(value.to_string()));
+            return Ok(Some(attribute.value.into_owned()));
         }
     }
 
     Ok(None)
 }
 
-fn attr_i64(element: &BytesStart<'_>, key: &[u8]) -> AppResult<Option<i64>> {
+fn attr_i64(element: &BytesStart<'_>, key: &str) -> AppResult<Option<i64>> {
     attr_value(element, key)?.map_or(Ok(None), |value| {
         value.trim().parse::<i64>().map(Some).map_err(|error| {
             AppError::Repository(format!(

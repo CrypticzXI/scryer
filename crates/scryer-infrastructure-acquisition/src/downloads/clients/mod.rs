@@ -302,10 +302,10 @@ pub fn is_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
 
-fn is_nzb_root_name(name: &[u8]) -> bool {
-    name.rsplit(|byte| *byte == b':')
+fn is_nzb_root_name(name: &str) -> bool {
+    name.rsplit(':')
         .next()
-        .is_some_and(|local_name| local_name == b"nzb")
+        .is_some_and(|local_name| local_name == "nzb")
 }
 
 struct MpscChunkReader {
@@ -406,10 +406,7 @@ fn validate_nzb_reader<R: BufRead>(mut reader: Reader<R>) -> AppResult<Reader<R>
             | Ok(Event::PI(_))
             | Ok(Event::DocType(_)) => {}
             Ok(Event::Text(text)) if !saw_root => {
-                let text = text.decode().map_err(|err| {
-                    AppError::Validation(format!("nzb XML text decode failed: {err}"))
-                })?;
-                let text = quick_xml::escape::unescape(&text).map_err(|err| {
+                let text = quick_xml::escape::unescape(text.as_ref()).map_err(|err| {
                     AppError::Validation(format!("nzb XML text decode failed: {err}"))
                 })?;
                 if !text
