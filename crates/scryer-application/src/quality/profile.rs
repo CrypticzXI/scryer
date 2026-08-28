@@ -58,6 +58,76 @@ pub struct QualityProfileCriteria {
     pub facet_persona_overrides: HashMap<String, ScoringPersona>,
 }
 
+/// The acceptance-deciding subset of [`QualityProfileCriteria`], hashed by
+/// `convergence::profile_criteria_version` to version a scope's search
+/// fingerprint.
+///
+/// Only fields that change **which releases are acceptable** belong here.
+/// Ranking-only fields (`scoring_persona`, `scoring_overrides`,
+/// `facet_persona_overrides`, `atmos_preferred`, `prefer_remux`,
+/// `prefer_dual_audio`) are deliberately absent: re-ordering candidates needs no
+/// new indexer data, so a ranking edit must not invalidate convergence coverage
+/// and force a library-wide re-search. Re-ranking happens against the results
+/// already on hand.
+///
+/// Two rules bind anyone touching `QualityProfileCriteria`:
+///
+/// 1. Every new field must be explicitly classified acceptance-vs-ranking and,
+///    if it gates acceptance, mirrored here. Silence defaults it to "ranking",
+///    which is the wrong answer for a field that vetoes releases.
+/// 2. Every `Option` here carries `skip_serializing_if = "Option::is_none"`, so
+///    an unset value is an absent key rather than a `null`. That is what lets a
+///    field be added without moving the fingerprint of every profile that does
+///    not set it (D19 — see the `cutoff_score` comment above).
+#[derive(Debug, Serialize)]
+pub(crate) struct AcceptanceCriteria<'a> {
+    pub quality_tiers: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archival_quality: Option<&'a String>,
+    pub allow_unknown_quality: bool,
+    pub source_allowlist: &'a [ReleaseSource],
+    pub source_blocklist: &'a [ReleaseSource],
+    pub video_codec_allowlist: &'a [VideoCodec],
+    pub video_codec_blocklist: &'a [VideoCodec],
+    pub audio_codec_allowlist: &'a [AudioCodec],
+    pub audio_codec_blocklist: &'a [AudioCodec],
+    pub dolby_vision_allowed: bool,
+    pub detected_hdr_allowed: bool,
+    pub allow_bd_disk: bool,
+    pub allow_upgrades: bool,
+    pub required_audio_languages: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cutoff_tier: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_score_to_grab: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cutoff_score: Option<i32>,
+}
+
+impl<'a> From<&'a QualityProfileCriteria> for AcceptanceCriteria<'a> {
+    fn from(criteria: &'a QualityProfileCriteria) -> Self {
+        Self {
+            quality_tiers: &criteria.quality_tiers,
+            archival_quality: criteria.archival_quality.as_ref(),
+            allow_unknown_quality: criteria.allow_unknown_quality,
+            source_allowlist: &criteria.source_allowlist,
+            source_blocklist: &criteria.source_blocklist,
+            video_codec_allowlist: &criteria.video_codec_allowlist,
+            video_codec_blocklist: &criteria.video_codec_blocklist,
+            audio_codec_allowlist: &criteria.audio_codec_allowlist,
+            audio_codec_blocklist: &criteria.audio_codec_blocklist,
+            dolby_vision_allowed: criteria.dolby_vision_allowed,
+            detected_hdr_allowed: criteria.detected_hdr_allowed,
+            allow_bd_disk: criteria.allow_bd_disk,
+            allow_upgrades: criteria.allow_upgrades,
+            required_audio_languages: &criteria.required_audio_languages,
+            cutoff_tier: criteria.cutoff_tier.as_ref(),
+            min_score_to_grab: criteria.min_score_to_grab,
+            cutoff_score: criteria.cutoff_score,
+        }
+    }
+}
+
 /// JSON-serializable container for all scoring-related fields.
 /// Stored in the `scoring_config` TEXT column of the `quality_profiles` table.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
