@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect } from "react";
+import { GrabbedReleaseToastListener } from "@/components/root/grabbed-release-toast-listener";
 import { useGlobalSearch } from "@/lib/hooks/use-global-search";
 import type { Facet } from "@/lib/types";
 import type { LocaleCode } from "@/lib/i18n";
@@ -34,6 +35,7 @@ export function GlobalSearchProvider({
 
   return (
     <SearchContext.Provider value={searchState}>
+      <GrabbedReleaseToastListener />
       {children}
     </SearchContext.Provider>
   );

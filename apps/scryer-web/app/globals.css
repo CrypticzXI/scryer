@@ -559,11 +559,9 @@ body {
 }
 
 [data-slot="sidebar-inner"] {
-  border-right: 1px solid var(--scry-border3);
+  border-right: 1px solid color-mix(in srgb, var(--scry-border3) 52%, transparent);
   background: var(--scry-shell-side-bg);
-  box-shadow:
-    inset -1px 0 0 color-mix(in srgb, var(--scry-border3) 48%, transparent),
-    16px 0 42px rgba(28, 39, 68, 0.035);
+  box-shadow: none;
 }
 
 [data-slot="global-search-panel"] {

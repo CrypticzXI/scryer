@@ -289,8 +289,6 @@ const en: LocaleDictionary = {
   "settings.openSecuritySettings": "Open security settings",
   "settings.externalAuthLinkingEnabled": "Linking enabled",
   "settings.externalAccountInvites": "External account invites",
-  "settings.externalAccountInvitesUnavailable":
-    "Enable media server login and configure at least one Jellyfin or Plex connection before creating external account invites.",
   "settings.externalAccountInviteRequired":
     "Choose a user and media server account.",
   "settings.externalAccountInviteCreated": "External account invite created.",
@@ -1082,6 +1080,8 @@ const en: LocaleDictionary = {
 
   "toast.catalogAdded": "Added to catalog",
   "toast.catalogAddedAutoSearch": "Automatic search queued.",
+  "toast.releaseGrabbed": "Release grabbed",
+  "toast.titleImported": "Title imported",
   "toast.viewInCatalog": "View in catalog",
 
   "label.back": "Back",
@@ -2419,6 +2419,10 @@ const en: LocaleDictionary = {
   "profile.highlightColor": "Highlight color",
   "profile.highlightColorHelp":
     "Used across selection, active navigation, badges, and primary actions.",
+  "profile.highlightColorCustom": "Custom color",
+  "profile.highlightColorModel": "Color model",
+  "profile.highlightColorApply": "Apply color",
+  "profile.highlightColorCancel": "Cancel",
   "profile.highlightColorSaved": "Highlight color updated.",
   "profile.highlightColorSaveFailed": "Failed to update highlight color.",
   "color.indigo": "Indigo",
@@ -2426,9 +2430,13 @@ const en: LocaleDictionary = {
   "color.sky": "Sky",
   "color.teal": "Teal",
   "color.emerald": "Emerald",
+  "color.green": "Green",
   "color.amber": "Amber",
+  "color.cyan": "Cyan",
   "color.rose": "Rose",
+  "color.red": "Red",
   "color.fuchsia": "Fuchsia",
+  "color.biPrideMagenta": "Bi pride magenta",
   "color.crab": "Crab",
   "profile.changePassword": "Change Password",
   "profile.currentPassword": "Current Password",
