@@ -1166,7 +1166,7 @@ async fn preview_manual_import(
                 .find(|episode| episode.id == episode_id)
         {
             suggested_episode_id = Some(episode.id.clone());
-            suggested_episode_label = Some(manual_import_episode_label(&episode));
+            suggested_episode_label = Some(manual_import_episode_label(episode));
         }
 
         let is_grabbed_fallback_path = grabbed_fallback_path

@@ -7479,7 +7479,7 @@ async fn manual_import_preview_reconciles_alternate_numbered_typoed_episode_titl
             source_dir.path(),
             &title,
             &release_evidence,
-            &[scoped_episode.clone()],
+            std::slice::from_ref(&scoped_episode),
         )
         .await
         .expect("preview manual import");
@@ -7600,7 +7600,7 @@ async fn manual_import_preview_reconciles_alternate_numbered_verified_pack_membe
             source_dir.path(),
             &title,
             &release_evidence,
-            &[scoped_episode.clone()],
+            std::slice::from_ref(&scoped_episode),
         )
         .await
         .expect("preview manual import");

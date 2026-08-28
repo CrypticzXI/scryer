@@ -233,7 +233,7 @@ pub(crate) async fn run_background_acquisition_cycle_with_blocked_facets(
                     app,
                     title,
                     title_work,
-                    &targets,
+                    targets,
                     now,
                     availability,
                     indexer_hosts,
@@ -1356,7 +1356,7 @@ async fn process_single_target(
     {
         Ok(Some(row)) => row,
         Ok(None) => app.new_wanted_state_view(
-            &title,
+            title,
             &target.media_type,
             target.episode_id.clone(),
             effective_collection_id.clone(),
@@ -1480,12 +1480,12 @@ async fn process_single_target(
         };
 
     let search_title = app
-        .release_search_title_for_wanted_item(&title, item, episode.as_ref())
+        .release_search_title_for_wanted_item(title, item, episode.as_ref())
         .await;
 
     let subject = app
         .resolve_release_search_subject_for_wanted_item(
-            &title,
+            title,
             &search_title,
             item,
             episode.as_ref(),
@@ -1523,7 +1523,7 @@ async fn process_single_target(
         let claimed_episode_ids = cycle.claimed_episode_ids();
         match try_series_pack_for_title(
             app,
-            &title,
+            title,
             &search_title,
             target,
             now,
@@ -1531,8 +1531,8 @@ async fn process_single_target(
             indexer_hosts,
             dl_snapshot,
             &failed_routes,
-            &submissions,
-            &tracked_states,
+            submissions,
+            tracked_states,
             &claimed_episode_ids,
         )
         .await
@@ -1766,7 +1766,7 @@ async fn process_single_target(
                     let decision_code = annotated_auto_decision_code(candidate);
                     // Recorded before any gate ran for this pack, so there is no
                     // bar to name.
-                    record_release_decision(app, item, &title, candidate, decision_code, None, now)
+                    record_release_decision(app, item, title, candidate, decision_code, None, now)
                         .await;
                     // `AlreadyActive` only. That pack is already downloading,
                     // so searching its episodes would duplicate it. `PendingDelay`
@@ -1965,7 +1965,7 @@ async fn process_single_target(
                                 persist_standby_candidates(
                                     app,
                                     item,
-                                    &title,
+                                    title,
                                     &pack_results,
                                     best_pack_index + 1,
                                     now,
@@ -1999,10 +1999,10 @@ async fn process_single_target(
                                 let _ = app
                                     .append_domain_event(new_title_domain_event(
                                         None,
-                                        &title,
+                                        title,
                                         DomainEventPayload::ReleaseGrabbed(
                                             ReleaseGrabbedEventData {
-                                                title: title_context_snapshot(&title),
+                                                title: title_context_snapshot(title),
                                                 source_title: Some(best_pack.title.clone()),
                                                 source_hint: Some(best_pack.source.clone()),
                                                 source_provider: Some(best_pack.source.clone()),
@@ -2205,7 +2205,7 @@ async fn process_single_target(
         .record_acquisition_scope_search_attempt(&item.id, &now.to_rfc3339())
         .await;
 
-    app.emit_acquisition_search_completed_event(None, &title, results.len() as i64)
+    app.emit_acquisition_search_completed_event(None, title, results.len() as i64)
         .await;
 
     if results.is_empty() {
@@ -2270,9 +2270,9 @@ async fn process_single_target(
     // than a number remembered on the scope row — and so the cutoff check below
     // can ask about the *score* half of the cutoff, not just the quality half.
     let admission = {
-        let scoring_context = app.resolve_canonical_scoring_context(&title, profile).await;
+        let scoring_context = app.resolve_canonical_scoring_context(title, profile).await;
         app.admission_subject_for_scope(
-            &title,
+            title,
             &item.submission_scope(),
             &scoring_context,
             title.runtime_minutes,
@@ -2344,7 +2344,7 @@ async fn process_single_target(
             .unwrap_or_default();
         app.park_pending_release_for_review(
             item,
-            &title,
+            title,
             candidate,
             candidate_score,
             serialize_decision_explanation(candidate),
@@ -2367,10 +2367,10 @@ async fn process_single_target(
         };
         if !is_allowed {
             // Blocked on quality alone: admission never looked at an incumbent.
-            record_release_decision(app, item, &title, candidate, decision_code, None, now).await;
+            record_release_decision(app, item, title, candidate, decision_code, None, now).await;
             app.emit_acquisition_candidate_rejected_event(
                 None,
-                &title,
+                title,
                 candidate.title.clone(),
                 decision_code.as_str().to_string(),
             )
@@ -2411,7 +2411,7 @@ async fn process_single_target(
         record_release_decision(
             app,
             item,
-            &title,
+            title,
             candidate,
             decision_code,
             incumbent_bar,
@@ -2422,7 +2422,7 @@ async fn process_single_target(
         if !decision_code.is_eligible() {
             app.emit_acquisition_candidate_rejected_event(
                 None,
-                &title,
+                title,
                 candidate.title.clone(),
                 decision_code.as_str().to_string(),
             )
@@ -2449,7 +2449,7 @@ async fn process_single_target(
                 parked_ambiguous_identity = true;
                 app.park_pending_release_for_review(
                     item,
-                    &title,
+                    title,
                     candidate,
                     candidate_score,
                     serialize_decision_explanation(candidate),
@@ -2809,7 +2809,7 @@ async fn process_single_target(
                 persist_standby_candidates(
                     app,
                     item,
-                    &title,
+                    title,
                     &results,
                     candidate_index + 1,
                     now,
@@ -2822,9 +2822,9 @@ async fn process_single_target(
                 let _ = app
                     .append_domain_event(new_title_domain_event(
                         None,
-                        &title,
+                        title,
                         DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
-                            title: title_context_snapshot(&title),
+                            title: title_context_snapshot(title),
                             source_title: Some(candidate.title.clone()),
                             source_hint: Some(candidate.source.clone()),
                             source_provider: Some(candidate.source.clone()),

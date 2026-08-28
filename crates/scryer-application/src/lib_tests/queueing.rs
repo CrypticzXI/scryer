@@ -331,10 +331,17 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
     assert!(second.reused_existing);
     assert_eq!(*download_client.queue_calls.lock().await, 1);
     assert_eq!(
-        download_client.recent_activity_calls.lock().await.as_slice(),
+        download_client
+            .recent_activity_calls
+            .lock()
+            .await
+            .as_slice(),
         &[100]
     );
-    assert_eq!(download_submissions.list_for_title_calls.lock().await.len(), 1);
+    assert_eq!(
+        download_submissions.list_for_title_calls.lock().await.len(),
+        1
+    );
 
     let submissions = download_submissions.store.lock().await.clone();
     let expected_signature = normalize_release_selection_signature(

@@ -346,7 +346,9 @@ fn unsupported_response(request: PluginHostRequest) -> PluginHostResponse {
         PluginHostRequest::StateSet(_) => PluginHostResponse::StateSet(unsupported()),
         PluginHostRequest::StateDelete(_) => PluginHostResponse::StateDelete(unsupported()),
         PluginHostRequest::Http(_) => PluginHostResponse::Http(unsupported()),
-        PluginHostRequest::ReservedHttpBatch(_) => PluginHostResponse::ReservedHttpBatch(unsupported()),
+        PluginHostRequest::ReservedHttpBatch(_) => {
+            PluginHostResponse::ReservedHttpBatch(unsupported())
+        }
         PluginHostRequest::SocketOpen(_) => PluginHostResponse::SocketOpen(unsupported()),
         PluginHostRequest::SocketRead(_) => PluginHostResponse::SocketRead(unsupported()),
         PluginHostRequest::SocketWrite(_) => PluginHostResponse::SocketWrite(unsupported()),
@@ -566,7 +568,9 @@ mod tests {
             },
         ))
         .expect("pre-release batch request serializes");
-        let handle = host.call(&batch).expect("reserved request receives a response");
+        let handle = host
+            .call(&batch)
+            .expect("reserved request receives a response");
         let response: PluginHostResponse =
             postcard::from_bytes(&host.response(handle).expect("response is retained"))
                 .expect("reserved response decodes");
@@ -578,9 +582,9 @@ mod tests {
             }))
         ));
 
-        let legacy_later_operation = postcard::to_allocvec(&PreReleasePluginHostRequest::SocketClose(
-            SocketCloseRequest { handle: 1 },
-        ))
+        let legacy_later_operation = postcard::to_allocvec(
+            &PreReleasePluginHostRequest::SocketClose(SocketCloseRequest { handle: 1 }),
+        )
         .expect("pre-release later request serializes");
         let handle = host
             .call(&legacy_later_operation)

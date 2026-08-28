@@ -1341,14 +1341,13 @@ pub async fn prepare_plugin_http_target_with_extra_ca(
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(&host, &resolved_addrs);
     if !extra_ca_bundle_pem.trim().is_empty() {
-        builder = builder.tls_certs_merge(
-            uploaded_root_certificates(extra_ca_bundle_pem).map_err(|source| {
-                OutboundDestinationError::TrustBundle {
+        builder =
+            builder.tls_certs_merge(uploaded_root_certificates(extra_ca_bundle_pem).map_err(
+                |source| OutboundDestinationError::TrustBundle {
                     label,
                     message: source,
-                }
-            })?,
-        );
+                },
+            )?);
     }
     let client = builder
         .build()

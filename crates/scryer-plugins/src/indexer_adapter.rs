@@ -476,10 +476,15 @@ impl WasmIndexerClient {
         let Some(indexer) = self.component.as_ref() else {
             return Ok(None);
         };
-        let request = postcard::to_allocvec(&command).map_err(|error| {
-            AppError::Repository(format!("failed to encode indexer component request: {error}"))
+        let (request, is_search) = match command {
+            PluginIndexerCommand::Search(request) => (serde_json::to_vec(&request), true),
+            PluginIndexerCommand::Action(request) => (serde_json::to_vec(&request), false),
+        };
+        let request = request.map_err(|error| {
+            AppError::Repository(format!(
+                "failed to encode indexer component request: {error}"
+            ))
         })?;
-        let is_search = matches!(&command, PluginIndexerCommand::Search(_));
         let token = cancel_token.cloned().unwrap_or_else(CancellationToken::new);
         let _guard = indexer.actor.lock().await;
         indexer.host.bind_cancellation(token.clone());
@@ -547,15 +552,15 @@ impl WasmIndexerClient {
             }
         };
         let result = if is_search {
-            postcard::from_bytes::<PluginResult<PluginSearchResponse>>(&bytes)
+            serde_json::from_slice::<PluginResult<PluginSearchResponse>>(&bytes)
                 .map(PluginIndexerCommandResult::Search)
         } else {
-            postcard::from_bytes::<PluginResult<PluginActionResponse>>(&bytes)
+            serde_json::from_slice::<PluginResult<PluginActionResponse>>(&bytes)
                 .map(PluginIndexerCommandResult::Action)
         }
         .map_err(|error| {
             AppError::Repository(format!(
-                "indexer component {} {operation} returned invalid postcard response: {error}",
+                "indexer component {} {operation} returned invalid JSON response: {error}",
                 self.descriptor.id
             ))
         })?;
@@ -598,9 +603,7 @@ impl WasmIndexerClient {
                 )),
                 Err(error) => Err(error),
             };
-            indexer
-                .host
-                .finish_indexer_error_capture(result.is_err());
+            indexer.host.finish_indexer_error_capture(result.is_err());
             return result;
         }
         if let Some(indexer) = self.command.as_ref() {
@@ -688,9 +691,7 @@ impl WasmIndexerClient {
                 )),
                 Err(error) => Err(error),
             };
-            indexer
-                .host
-                .finish_indexer_error_capture(result.is_err());
+            indexer.host.finish_indexer_error_capture(result.is_err());
             return result;
         }
         if let Some(indexer) = self.command.as_ref() {
@@ -802,18 +803,26 @@ fn decode_search_result(
             },
         }),
         PluginResult::Err(PluginError {
+            public_message,
             details:
                 Some(PluginErrorDetails::IndexerSearch(IndexerSearchPluginError::Deferred {
                     reason,
                     retry_after_seconds,
                 })),
             ..
-        }) => Err(AppError::temporary_unavailable(
-            format!("indexer search deferred: {reason:?}"),
-            retry_after_seconds
+        }) => {
+            let retry_after = retry_after_seconds
                 .and_then(|seconds| u64::try_from(seconds).ok())
-                .map(std::time::Duration::from_secs),
-        )),
+                .map(std::time::Duration::from_secs);
+            let message = match retry_after {
+                Some(retry_after) => format!(
+                    "{public_message}; indexer search deferred: {reason:?}; retry after {}s",
+                    retry_after.as_secs()
+                ),
+                None => format!("{public_message}; indexer search deferred: {reason:?}"),
+            };
+            Err(AppError::temporary_unavailable(message, retry_after))
+        }
         PluginResult::Err(error) => Err(AppError::Repository(format!(
             "{context}: plugin error {:?}: {}",
             error.code, error.public_message
@@ -1676,7 +1685,7 @@ impl IndexerClient for WasmIndexerClient {
             results,
             indexer_outcomes: Vec::new(),
             completion,
-            
+
             api_current: response.api_current,
             api_max: response.api_max,
             grab_current: response.grab_current,
@@ -1684,10 +1693,6 @@ impl IndexerClient for WasmIndexerClient {
         })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "plugin search forwards the full caller-controlled search envelope"
-    )]
     async fn search_stream(
         &self,
         query: String,

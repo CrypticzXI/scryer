@@ -422,10 +422,7 @@ async fn postgres_upgrade_applies_and_migrates_legacy_identity_rows() {
     let admin = sqlx::PgPool::connect(&url)
         .await
         .expect("postgres should connect");
-    let schema = format!(
-        "blake3_upgrade_{}",
-        uuid::Uuid::new_v4().simple().to_string()
-    );
+    let schema = format!("blake3_upgrade_{}", uuid::Uuid::new_v4().simple());
     sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await

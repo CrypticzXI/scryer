@@ -55,8 +55,7 @@ pub fn schedule_plugin_rehydration(
     let mut artifacts = runtime_plugins
         .iter()
         .filter_map(|plugin| {
-            let flavor = match module_flavor_for_artifact(&plugin.descriptor, &plugin.wasm_bytes)
-            {
+            let flavor = match module_flavor_for_artifact(&plugin.descriptor, &plugin.wasm_bytes) {
                 Ok(flavor) => flavor,
                 Err(error) => {
                     warn!(
@@ -127,13 +126,15 @@ fn module_flavor_for_artifact(
     descriptor: &PluginDescriptor,
     wasm: &[u8],
 ) -> Result<ModuleFlavor, String> {
-    Ok(match PluginRuntimeBacking::for_artifact(descriptor, wasm)? {
-        PluginRuntimeBacking::LegacyReactor => ModuleFlavor::LegacyReactor,
-        PluginRuntimeBacking::WasmtimeArchive
-        | PluginRuntimeBacking::WasmtimeSubtitleSync
-        | PluginRuntimeBacking::WasmtimeCommand => ModuleFlavor::Command,
-        PluginRuntimeBacking::WasmtimeIndexerComponent => ModuleFlavor::IndexerComponent,
-    })
+    Ok(
+        match PluginRuntimeBacking::for_artifact(descriptor, wasm)? {
+            PluginRuntimeBacking::LegacyReactor => ModuleFlavor::LegacyReactor,
+            PluginRuntimeBacking::WasmtimeArchive
+            | PluginRuntimeBacking::WasmtimeSubtitleSync
+            | PluginRuntimeBacking::WasmtimeCommand => ModuleFlavor::Command,
+            PluginRuntimeBacking::WasmtimeIndexerComponent => ModuleFlavor::IndexerComponent,
+        },
+    )
 }
 
 type IndexerClientCacheKey = (String, String, String, String, String);
@@ -3239,7 +3240,8 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
 
     if crate::wasmtime_host::component_host::is_indexer_component(&bytes)? {
         return Err(
-            "WASI Preview 2 indexer components must embed a top-level plugin descriptor".to_string(),
+            "WASI Preview 2 indexer components must embed a top-level plugin descriptor"
+                .to_string(),
         );
     }
 

@@ -2146,7 +2146,7 @@ impl MultiIndexerSearchClient {
     ) {
         let response = IndexerSearchResponse {
             results: vec![],
-            
+
             completion: IndexerSearchCompletion::Partial {
                 reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
                 retry_after: None,
@@ -2887,7 +2887,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             info!(mode = ?mode, "no enabled indexer configs found");
             return Ok(IndexerSearchResponse {
                 results: vec![],
-                
+
                 indexer_outcomes: Vec::new(),
                 completion: IndexerSearchCompletion::Complete,
                 api_current: None,
@@ -3170,7 +3170,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             info!(mode = ?mode, "no scheduler-eligible indexer configs found");
             return Ok(IndexerSearchResponse {
                 results: vec![],
-                
+
                 indexer_outcomes: Vec::new(),
                 completion: IndexerSearchCompletion::Complete,
                 api_current: None,
@@ -3660,7 +3660,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                         let response = IndexerSearchResponse {
                             results,
-                            
+
                             indexer_outcomes: Vec::new(),
                             completion: IndexerSearchCompletion::Complete,
                             api_current: None,
@@ -4480,7 +4480,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     scheduler_lease_for_task.clone(),
                     Ok(IndexerSearchResponse {
                         results: collected_results,
-                        
+
                         indexer_outcomes: Vec::new(),
                         completion: if all_strategies_complete {
                             IndexerSearchCompletion::Complete
@@ -4711,7 +4711,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
         Ok(IndexerSearchResponse {
             results: all_results,
-            
+
             completion,
             api_current: None,
             api_max: None,
@@ -5278,7 +5278,7 @@ mod tests {
         let response = |completion| {
             Ok(IndexerSearchResponse {
                 results: Vec::new(),
-                
+
                 completion,
                 indexer_outcomes: Vec::new(),
                 api_current: None,
@@ -5655,7 +5655,7 @@ mod tests {
                 completion: IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
-                
+
                 api_current: None,
                 api_max: None,
                 grab_current: None,
@@ -5891,7 +5891,7 @@ mod tests {
                 completion: IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
-                
+
                 api_current: None,
                 api_max: None,
                 grab_current: None,
@@ -6042,7 +6042,7 @@ mod tests {
                 completion: IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
-                
+
                 api_current: None,
                 api_max: None,
                 grab_current: None,
@@ -6289,7 +6289,7 @@ mod tests {
             completion: IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: titles.iter().map(|title| search_result(title)).collect(),
-            
+
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -6752,7 +6752,7 @@ mod tests {
                     completion: IndexerSearchCompletion::Complete,
                     indexer_outcomes: Vec::new(),
                     results: vec![search_result("Recovered.Show.S01E01")],
-                    
+
                     api_current: None,
                     api_max: None,
                     grab_current: None,
@@ -7740,7 +7740,7 @@ mod tests {
                         completion: IndexerSearchCompletion::Complete,
                         indexer_outcomes: Vec::new(),
                         results: vec![],
-                        
+
                         api_current: None,
                         api_max: None,
                         grab_current: None,
@@ -9670,7 +9670,7 @@ mod tests {
                 },
                 indexer_outcomes: Vec::new(),
                 results: Vec::new(),
-                
+
                 api_current: None,
                 api_max: None,
                 grab_current: None,

@@ -1157,7 +1157,7 @@ mod tests {
             expires_at: now + chrono::Duration::days(7),
         };
         store
-            .record_search_diagnostics(&run, &[candidate.clone()])
+            .record_search_diagnostics(&run, std::slice::from_ref(&candidate))
             .await
             .expect("diagnostics should persist");
 

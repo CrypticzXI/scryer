@@ -102,7 +102,8 @@ impl ModuleRegistry {
     }
 
     fn insert_ready(&mut self, key: ModuleKey, artifact: CachedArtifact) {
-        self.entries.insert(key.clone(), ModuleEntry::Ready(artifact));
+        self.entries
+            .insert(key.clone(), ModuleEntry::Ready(artifact));
         self.touch(&key);
 
         while self
@@ -255,7 +256,9 @@ pub(crate) fn schedule_rehydration(artifacts: Vec<RehydrationArtifact>) {
 pub(crate) fn module_for(flavor: ModuleFlavor, wasm: &[u8]) -> Result<Arc<Module>, String> {
     match artifact_for(flavor, wasm)? {
         CachedArtifact::Module(module) => Ok(module),
-        CachedArtifact::Component(_) => Err("component artifact cannot be loaded as a core module".into()),
+        CachedArtifact::Component(_) => {
+            Err("component artifact cannot be loaded as a core module".into())
+        }
     }
 }
 

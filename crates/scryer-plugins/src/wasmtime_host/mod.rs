@@ -18,11 +18,11 @@ mod invoke;
 pub(crate) mod module_cache;
 mod sandbox;
 
+pub(crate) use component_host::validate_indexer_component;
 pub(crate) use describe::{
     command_model_describe, validate_archive_module, validate_command_module,
     validate_subtitle_sync_module,
 };
-pub(crate) use component_host::validate_indexer_component;
 pub(crate) use invoke::{
     ArchiveInvocation, CommandInvocation, SubtitleSyncInvocation, process_archive, process_command,
     process_subtitle_sync,

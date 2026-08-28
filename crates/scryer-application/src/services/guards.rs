@@ -1,7 +1,6 @@
 use super::*;
 
-const CACHED_SUBMISSION_STATE_MAX_AGE: std::time::Duration =
-    std::time::Duration::from_secs(30);
+const CACHED_SUBMISSION_STATE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// In-process guard table for download-submission dedupe and scope ownership.
 ///
@@ -20,8 +19,7 @@ pub(crate) struct CanonicalSubmissionTitleState {
     refreshed_at: std::time::Instant,
     pub(crate) submissions: Vec<DownloadSubmission>,
     pub(crate) episodes: Vec<scryer_domain::Episode>,
-    pub(crate) accepted_download_ids:
-        HashSet<scryer_domain::download_identity::DownloadId>,
+    pub(crate) accepted_download_ids: HashSet<scryer_domain::download_identity::DownloadId>,
 }
 
 impl CanonicalSubmissionTitleState {
@@ -116,7 +114,8 @@ impl DownloadSubmissionGuardTable {
     }
 
     pub(crate) async fn acquire_client_snapshot(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.acquire_key("download-client-snapshot".to_string()).await
+        self.acquire_key("download-client-snapshot".to_string())
+            .await
     }
 
     pub(crate) fn cached_title_state(
@@ -127,17 +126,11 @@ impl DownloadSubmissionGuardTable {
             .title_states
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        states.retain(|_, state| {
-            state.refreshed_at.elapsed() <= CACHED_SUBMISSION_STATE_MAX_AGE
-        });
+        states.retain(|_, state| state.refreshed_at.elapsed() <= CACHED_SUBMISSION_STATE_MAX_AGE);
         states.get(title_id).cloned()
     }
 
-    pub(crate) fn store_title_state(
-        &self,
-        title_id: &str,
-        state: CanonicalSubmissionTitleState,
-    ) {
+    pub(crate) fn store_title_state(&self, title_id: &str, state: CanonicalSubmissionTitleState) {
         self.title_states
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -168,9 +161,7 @@ impl DownloadSubmissionGuardTable {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .filter(|cached| {
-                cached.refreshed_at.elapsed() <= CACHED_SUBMISSION_STATE_MAX_AGE
-            })
+            .filter(|cached| cached.refreshed_at.elapsed() <= CACHED_SUBMISSION_STATE_MAX_AGE)
             .map(|cached| cached.snapshot.clone())
     }
 

@@ -9,12 +9,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use scryer_application::{CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, challenge_solver as solver};
+use scryer_application::{
+    CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, challenge_solver as solver,
+};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable, bindgen};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use crate::plugin_http_host::{IndexerErrorCaptureContext, IndexerProxyPolicy, PluginHttpHost, enforce_allowed_hosts, shared_plugin_http_runtime};
+use crate::plugin_http_host::{
+    IndexerErrorCaptureContext, IndexerProxyPolicy, PluginHttpHost, enforce_allowed_hosts,
+    shared_plugin_http_runtime,
+};
 use crate::wasmtime_host::sandbox::HostLimits;
 
 bindgen!({
@@ -149,7 +154,9 @@ impl ComponentHost {
         if let Ok(mut operation_deadline) = self.inner.operation_deadline.lock() {
             *operation_deadline = deadline;
         }
-        store.set_epoch_deadline(crate::wasmtime_host::engine::deadline_ticks(self.inner.timeout));
+        store.set_epoch_deadline(crate::wasmtime_host::engine::deadline_ticks(
+            self.inner.timeout,
+        ));
     }
 
     async fn http(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
@@ -280,16 +287,15 @@ impl ComponentHost {
         let solver_timeout = scryer_outbound_http::effective_indexer_proxy_request_timeout(
             policy.config.request_timeout_seconds,
         );
-        let proxy_client = scryer_outbound_http::indexer_proxy_reqwest_client_with_extra_ca(
-            extra_ca_bundle_pem,
-        )
-        .map_err(|_| {
-            solver::SolverHealthLedger::shared().record_failure(
-                &policy.config.id,
-                solver::solver_error_message(provider, solver::SolverErrorKind::Unreachable),
-            );
-            TransportError::Transport
-        })?;
+        let proxy_client =
+            scryer_outbound_http::indexer_proxy_reqwest_client_with_extra_ca(extra_ca_bundle_pem)
+                .map_err(|_| {
+                solver::SolverHealthLedger::shared().record_failure(
+                    &policy.config.id,
+                    solver::solver_error_message(provider, solver::SolverErrorKind::Unreachable),
+                );
+                TransportError::Transport
+            })?;
         let endpoint = solver::solver_solve_endpoint(&policy.config.base_url);
         let cancellation = self.cancellation();
         let response = tokio::select! {
@@ -333,8 +339,7 @@ impl ComponentHost {
             Err(error) => {
                 let message = error.message(provider);
                 if solver::is_solver_service_error_message(message) {
-                    solver::SolverHealthLedger::shared()
-                        .record_failure(&policy.config.id, message);
+                    solver::SolverHealthLedger::shared().record_failure(&policy.config.id, message);
                 }
                 return Err(TransportError::Transport);
             }
@@ -368,22 +373,18 @@ impl ComponentHost {
                 headers: captured_headers,
                 body: body.clone(),
             },
-            response: HttpResponse { status, headers, body },
+            response: HttpResponse {
+                status,
+                headers,
+                body,
+            },
         })
     }
 
     async fn read_raw_response(
         &self,
         mut response: reqwest::Response,
-    ) -> Result<
-        (
-            u16,
-            Vec<Header>,
-            Vec<CapturedIndexerHttpHeader>,
-            Vec<u8>,
-        ),
-        TransportError,
-    > {
+    ) -> Result<(u16, Vec<Header>, Vec<CapturedIndexerHttpHeader>, Vec<u8>), TransportError> {
         if response
             .content_length()
             .is_some_and(|length| length > self.inner.max_response_bytes as u64)
@@ -439,7 +440,9 @@ impl ComponentHost {
                     final_response: None,
                 });
             }
-            Err(error) => tracing::warn!(error = %error, "failed to start component indexer HTTP error capture"),
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to start component indexer HTTP error capture")
+            }
         }
     }
 
@@ -513,7 +516,10 @@ impl ComponentHost {
             .as_ref()
             .map(|value| key.len() + value.len())
             .unwrap_or(0);
-        let Some(total) = state.bytes.checked_sub(old).and_then(|bytes| bytes.checked_add(new))
+        let Some(total) = state
+            .bytes
+            .checked_sub(old)
+            .and_then(|bytes| bytes.checked_add(new))
         else {
             return false;
         };
@@ -589,12 +595,13 @@ fn component_merged_cookie(
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case("cookie"))
         .map(|header| header.value.as_str());
-    let Some(solved_cookie) = solved_cookie else {
-        return None;
-    };
+    let solved_cookie = solved_cookie?;
 
     let mut cookies: Vec<(String, String)> = Vec::new();
-    for header in original_cookie.into_iter().chain(std::iter::once(solved_cookie)) {
+    for header in original_cookie
+        .into_iter()
+        .chain(std::iter::once(solved_cookie))
+    {
         for raw_pair in header.split(';') {
             let pair = raw_pair.trim();
             if !solver::safe_cookie_pair(pair) {
@@ -644,7 +651,11 @@ fn component_solved_response(
             headers: captured_headers,
             body: body.clone(),
         },
-        response: HttpResponse { status, headers, body },
+        response: HttpResponse {
+            status,
+            headers,
+            body,
+        },
     }
 }
 
@@ -770,7 +781,9 @@ impl ComponentRuntime {
     pub(crate) fn new(engine: &Engine, wasm: &[u8]) -> Result<Self, String> {
         let component = crate::wasmtime_host::module_cache::indexer_component(wasm)?;
         if !Engine::same(component.engine(), engine) {
-            return Err("indexer component cache returned an artifact for a different engine".into());
+            return Err(
+                "indexer component cache returned an artifact for a different engine".into(),
+            );
         }
         let mut linker = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)
@@ -788,10 +801,7 @@ impl ComponentRuntime {
         })
     }
 
-    pub(crate) async fn instantiate(
-        &self,
-        host: &ComponentHost,
-    ) -> Result<ComponentActor, String> {
+    pub(crate) async fn instantiate(&self, host: &ComponentHost) -> Result<ComponentActor, String> {
         let mut store = host.new_store(self.component.engine());
         let plugin = self
             .instance_pre
@@ -1034,7 +1044,11 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"<rss></rss>");
         assert_eq!(
-            server.received_requests().await.expect("recorded requests").len(),
+            server
+                .received_requests()
+                .await
+                .expect("recorded requests")
+                .len(),
             1,
             "the component host must not make a hidden direct target retry"
         );

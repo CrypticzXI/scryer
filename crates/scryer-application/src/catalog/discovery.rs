@@ -607,6 +607,7 @@ impl AppUseCase {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn score_release_results(
         &self,
         raw_results: Vec<IndexerSearchResult>,
@@ -701,7 +702,8 @@ impl AppUseCase {
                 .list_collections_for_title(title_id)
                 .await
                 .unwrap_or_default();
-            let indexer_priority_by_name = self.build_indexer_priority_by_name(indexer_routing).await;
+            let indexer_priority_by_name =
+                self.build_indexer_priority_by_name(indexer_routing).await;
             *prepared = Some(PreparedReleaseScoringInputs {
                 blocklist,
                 has_usenet_client,
@@ -717,7 +719,9 @@ impl AppUseCase {
                 now: chrono::Utc::now(),
             });
         }
-        let prepared = prepared.as_mut().expect("release scoring inputs initialized");
+        let prepared = prepared
+            .as_mut()
+            .expect("release scoring inputs initialized");
 
         raw_results.retain(|result| match result.source_kind {
             Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl) => {
@@ -728,8 +732,12 @@ impl AppUseCase {
             }
             None => true,
         });
-        let requested_episode =
-            resolve_requested_episode(&prepared.catalog_episodes, season, episode, absolute_episode);
+        let requested_episode = resolve_requested_episode(
+            &prepared.catalog_episodes,
+            season,
+            episode,
+            absolute_episode,
+        );
         let mut scored = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut rank_by_key: HashMap<String, crate::acquisition::scoring::SearchRank> =
@@ -792,7 +800,8 @@ impl AppUseCase {
                         },
                     );
                 }
-                !prepared.primary_episode_ids
+                !prepared
+                    .primary_episode_ids
                     .as_ref()
                     .and_then(Option::as_ref)
                     .is_some_and(|primary_episode_ids| {
@@ -862,7 +871,9 @@ impl AppUseCase {
                     scored_release_metadata.clone(),
                     result.size_bytes,
                 ),
-                &prepared.canonical_context.view(candidate_runtime_minutes, false),
+                &prepared
+                    .canonical_context
+                    .view(candidate_runtime_minutes, false),
             );
             let decision = scored_release.announced_decision;
 
@@ -901,7 +912,8 @@ impl AppUseCase {
                         .as_ref()
                         .and_then(|episode| episode.episode_numbers.iter().min().copied())
                         .unwrap_or(0),
-                    indexer_priority: prepared.indexer_priority_by_name
+                    indexer_priority: prepared
+                        .indexer_priority_by_name
                         .get(&result.source)
                         .copied()
                         .unwrap_or(i64::MAX),

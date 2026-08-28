@@ -104,7 +104,9 @@ impl PluginRuntimeBacking {
                 scryer_plugin_sdk::ProviderDescriptor::Indexer(_) => {
                     Ok(Self::WasmtimeIndexerComponent)
                 }
-                _ => Err("WASI component artifacts are currently supported only for indexers".into()),
+                _ => {
+                    Err("WASI component artifacts are currently supported only for indexers".into())
+                }
             };
         }
         if command_abi::command_abi_version(wasm)?.is_some() {

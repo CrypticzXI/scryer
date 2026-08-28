@@ -1047,7 +1047,7 @@ impl AppUseCase {
 
         let mut conflicts = Vec::new();
         for submission in submissions {
-            if !submission_scopes_overlap(&title.id, &submission.scope, scope, &episodes) {
+            if !submission_scopes_overlap(&title.id, &submission.scope, scope, episodes) {
                 continue;
             }
 
