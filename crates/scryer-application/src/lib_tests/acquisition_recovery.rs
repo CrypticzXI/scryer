@@ -1811,7 +1811,10 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(blocklist[0].normalized_release_name, "pals.s05.720p.bluray.dd5.1.x264-ntb");
+    assert_eq!(
+        blocklist[0].normalized_release_name,
+        "pals.s05.720p.bluray.dd5.1.x264-ntb"
+    );
 
     let failed_attempts = app
         .services
@@ -1918,7 +1921,10 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(blocklist[0].normalized_release_name, "pals.s05.720p.bluray.dd5.1.x264-ntb");
+    assert_eq!(
+        blocklist[0].normalized_release_name,
+        "pals.s05.720p.bluray.dd5.1.x264-ntb"
+    );
 
     let failed_attempts = app
         .services
@@ -5113,7 +5119,10 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(blocklist[0].normalized_release_name, "pals.s05.720p.bluray.dd5.1.x264-ntb");
+    assert_eq!(
+        blocklist[0].normalized_release_name,
+        "pals.s05.720p.bluray.dd5.1.x264-ntb"
+    );
 
     app.run_background_acquisition_cycle_once().await;
 
@@ -5461,9 +5470,7 @@ async fn season_pack_definitive_submit_error_records_failed_signature_and_blockl
     let blocklist = title_blocklist_entries(&app, &title.id).await;
     let entry = blocklist
         .iter()
-        .find(|entry| {
-            Some(&entry.normalized_release_name) == normalized_release_title.as_ref()
-        })
+        .find(|entry| Some(&entry.normalized_release_name) == normalized_release_title.as_ref())
         .unwrap_or_else(|| {
             panic!("a definitive season-pack submit failure must blocklist the pack: {blocklist:?}")
         });
@@ -5590,7 +5597,10 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
         1,
         "expected one blocklist entry: {blocklist:?}"
     );
-    assert_eq!(blocklist[0].normalized_release_name, "rejected.movie.2024.1080p.web-dl-grp");
+    assert_eq!(
+        blocklist[0].normalized_release_name,
+        "rejected.movie.2024.1080p.web-dl-grp"
+    );
     assert!(
         blocklist[0].reason.as_deref().is_some_and(|reason| {
             reason.starts_with("grab failed:")
@@ -5672,7 +5682,10 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
         1,
         "the vetoed release must be blocklisted for this title: {blocklist:?}"
     );
-    assert_eq!(blocklist[0].normalized_release_name, "counterfeit.feature.2024.1080p.web-dl-grp");
+    assert_eq!(
+        blocklist[0].normalized_release_name,
+        "counterfeit.feature.2024.1080p.web-dl-grp"
+    );
     assert!(
         blocklist[0]
             .reason
@@ -11062,5 +11075,404 @@ async fn a_parked_release_the_profile_now_blocks_is_not_grabbed() {
         .expect("pending grab should resolve"),
         crate::acquisition::pending::PendingGrabOutcome::Rejected,
         "a release the current profile vetoes must expire, not be grabbed"
+    );
+}
+
+// ── Plan 149 pre-release criticals ──────────────────────────────────────────
+
+/// A season query that surfaces an episode-scoped release used to be cached and
+/// substituted for the episode search, converging the episode scope on a query
+/// it never ran. The season result stays reachable through standby; it no
+/// longer replaces the query.
+#[tokio::test]
+async fn an_eligible_season_result_no_longer_replaces_the_episode_query() {
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_season_pack_titles(["Recent.Failed.Season.Pack.S07E23.1080p.WEB-DL".to_string()])
+            // The substitution filtered cached candidates by routed indexer, so
+            // the result has to carry the attribution a real response would.
+            .stamping_indexer_ids(),
+    );
+    let (app, _title, indexer_client, _download_client) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(
+        searches
+            .iter()
+            .any(|search| search.season == Some(7) && search.episode == Some(23)),
+        "the episode the season result covers must still spend its own query: {searches:?}"
+    );
+}
+
+/// A pack the delay profile chose to *wait* on is not a pack that won. It parks
+/// in `pending_releases` and leaves the episode lane free; only `AlreadyActive`
+/// still suppresses.
+#[tokio::test]
+async fn a_delayed_season_pack_no_longer_suppresses_its_episode_search() {
+    let pack = "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-DELAYED".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_season_pack_titles([pack.clone()])
+            .with_published_at(Utc::now().to_rfc3339()),
+    );
+    let (app, _title, indexer_client, download_client) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            DELAY_PROFILE_CATALOG_KEY,
+            None,
+            serde_json::json!([{
+                "id": "delayed-pack",
+                "name": "Delayed pack",
+                "usenet_delay_minutes": 120,
+            }])
+            .to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed delay profile");
+
+    app.run_background_acquisition_cycle_once().await;
+
+    assert!(
+        !download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .contains(&pack),
+        "a delayed pack must not be submitted"
+    );
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(
+        searches
+            .iter()
+            .any(|search| search.season == Some(7) && search.episode.is_some()),
+        "the delayed pack must not hold the episode lane for its whole window: {searches:?}"
+    );
+}
+
+/// The walk stops after ten grab attempts. Its untried remainder used to be
+/// discarded even though coverage was already recorded, leaving the scope
+/// converged with no corpus.
+#[tokio::test]
+async fn a_walk_that_exhausts_its_grab_budget_retains_the_untried_remainder() {
+    let releases = (1..=12)
+        .map(|index| format!("Retention.Movie.2024.1080p.WEB-DL-G{index:02}"))
+        .collect::<Vec<_>>();
+    let indexer_client =
+        Arc::new(TrackingIndexerClient::default().with_title_pack_titles(releases.clone()));
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Rejected("rejected".to_string())))
+        .await;
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        pending_releases.clone(),
+        wanted_items.clone(),
+        indexer_client,
+    );
+    let (title, _wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Retention Movie", 2024)
+            .await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let standby = pending_releases
+        .list_all_standby_pending_releases()
+        .await
+        .expect("list standby");
+    assert!(
+        !standby.is_empty(),
+        "a fired search that grabbed nothing must leave its remainder replayable"
+    );
+    let blocklisted = app.load_title_release_blocklist_signatures(&title.id).await;
+    assert!(
+        standby.iter().all(
+            |release| !crate::app_usecase_discovery::is_release_blocklisted(
+                release.indexer_id.as_deref(),
+                &release.release_title,
+                release.info_hash.as_deref(),
+                &blocklisted,
+            )
+        ),
+        "retention must not save releases the same walk just burned: {:?}",
+        standby
+            .iter()
+            .map(|release| release.release_title.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A standby row whose release is already downloading is covered *for now*.
+/// Expiring it is what leaves the next failure with nothing to walk.
+#[tokio::test]
+async fn an_active_standby_row_survives_replay_instead_of_expiring() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client.clone(),
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        pending_releases.clone(),
+        wanted_items.clone(),
+    );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Active Standby", 2024).await;
+    let release_title = "Active.Standby.2024.1080p.WEB-DL-GRP";
+    let standby = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Standby,
+    );
+    pending_releases
+        .insert_pending_release(&standby)
+        .await
+        .expect("seed standby");
+    let mut queue_item =
+        queue_history_fixture_item("active-job", DownloadQueueState::Downloading, 0);
+    queue_item.title_id = Some(title.id.clone());
+    queue_item.title_name = release_title.to_string();
+    download_client.queue_items.lock().await.push(queue_item);
+
+    let wanted = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted_id)
+        .await
+        .expect("get wanted")
+        .expect("wanted exists");
+    let snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(&app).await;
+    let outcome = crate::acquisition_workflow::try_saved_candidates(
+        &app,
+        &wanted,
+        None,
+        None,
+        &snapshot,
+        &Utc::now(),
+    )
+    .await;
+
+    assert!(
+        matches!(
+            outcome,
+            crate::acquisition_workflow::StandbyRecoveryOutcome::Active { .. }
+        ),
+        "an active release still covers the scope"
+    );
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&standby.id)
+            .await
+            .expect("load standby")
+            .expect("standby exists")
+            .status,
+        PendingReleaseStatus::Standby,
+        "the row must survive for the failure that download may still become"
+    );
+}
+
+/// The plan's headline case: every grab attempt fails because the client is
+/// down. Those candidates are not bad releases, so the corpus must survive and
+/// the next cycle must walk it without paying for another query.
+#[tokio::test]
+async fn a_client_down_cycle_retains_its_corpus_and_replays_it_next_cycle() {
+    let releases = (1..=3)
+        .map(|index| format!("Unavailable.Movie.2024.1080p.WEB-DL-G{index:02}"))
+        .collect::<Vec<_>>();
+    let indexer_client =
+        Arc::new(TrackingIndexerClient::default().with_title_pack_titles(releases.clone()));
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::SubmitUnavailable(
+            "client down".to_string(),
+        )))
+        .await;
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        pending_releases.clone(),
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+    seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Unavailable Movie", 2024).await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let standby = pending_releases
+        .list_all_standby_pending_releases()
+        .await
+        .expect("list standby");
+    assert!(
+        !standby.is_empty(),
+        "a client-down cycle must keep the releases it could not submit"
+    );
+
+    // Client recovers. The saved corpus is walked before any indexer query.
+    download_client.set_submit_error(None).await;
+    indexer_client.searches.lock().await.clear();
+    app.run_background_acquisition_cycle_once().await;
+
+    assert!(
+        indexer_client.searches.lock().await.is_empty(),
+        "the retained corpus must be replayed without a new indexer query"
+    );
+    assert!(
+        !download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty(),
+        "the recovered client must grab from the retained corpus"
+    );
+}
+
+/// Retention replaces the saved list, so a search that yields nothing keepable
+/// must put back what the scope already had rather than erasing it.
+#[tokio::test]
+async fn a_search_with_nothing_keepable_restores_the_previous_corpus() {
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_title_pack_titles(["Totally.Unrelated.Thing.2024.1080p.WEB-DL".to_string()]),
+    );
+    let download_client = Arc::new(StubDownloadClient::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        pending_releases.clone(),
+        wanted_items.clone(),
+        indexer_client,
+    );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Kept Corpus", 2024).await;
+    let release_title = "Kept.Corpus.2024.1080p.WEB-DL-GRP";
+    let saved = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Standby,
+    );
+    pending_releases
+        .insert_pending_release(&saved)
+        .await
+        .expect("seed standby");
+    // Blocklisted so the walk skips it and the search below still runs; the row
+    // itself stays walkable, which is exactly the corpus that must survive.
+    app.services
+        .workflow
+        .blocklist_repo
+        .block(&NewBlocklistEntry {
+            title_id: title.id.clone(),
+            release_name: release_title.to_ascii_lowercase(),
+            indexer_id: String::new(),
+            info_hash: None,
+            reason: Some("operator blocked".to_string()),
+        })
+        .await
+        .expect("blocklist the saved release");
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let standby = pending_releases
+        .list_all_standby_pending_releases()
+        .await
+        .expect("list standby");
+    assert!(
+        standby
+            .iter()
+            .any(|release| release.release_title == release_title),
+        "an all-rejected search must not erase the corpus the scope already had"
+    );
+}
+
+/// A standby write that fails partway leaves the scope holding less than its
+/// coverage claims, so the coverage has to be reopened.
+#[tokio::test]
+async fn a_partial_standby_write_reopens_the_scope_coverage() {
+    let releases = (1..=3)
+        .map(|index| format!("Partial.Movie.2024.1080p.WEB-DL-G{index:02}"))
+        .collect::<Vec<_>>();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_title_pack_titles(releases)
+            .reporting_routed_indexers_fired(),
+    );
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::SubmitUnavailable(
+            "client down".to_string(),
+        )))
+        .await;
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        pending_releases.clone(),
+        wanted_items.clone(),
+        indexer_client,
+    );
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
+    seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Partial Movie", 2024).await;
+    // The delete succeeds, the first insert succeeds, the rest fail.
+    pending_releases.fail_standby_insert_after(1).await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let remaining = coverage.recorded().await;
+    assert!(
+        remaining.is_empty(),
+        "a partial standby write must reopen the coverage it just claimed: {remaining:?}"
+    );
+}
+
+/// A release only the season query returns still has to reach the episode
+/// scope. Deleting the substitution must not delete the results with it.
+#[tokio::test]
+async fn a_release_only_the_season_query_returns_still_reaches_the_episode() {
+    let season_only = "Recent.Failed.Season.Pack.S07E23.1080p.WEB-DL-SEASONONLY".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_season_pack_titles([season_only.clone()])
+            .stamping_indexer_ids(),
+    );
+    let (app, _title, _indexer_client, download_client) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+
+    app.run_background_acquisition_cycle_once().await;
+
+    let submitted = download_client
+        .submitted_release_titles
+        .lock()
+        .await
+        .clone();
+    let standby = app
+        .services
+        .workflow
+        .pending_releases
+        .list_all_standby_pending_releases()
+        .await
+        .expect("list standby")
+        .into_iter()
+        .map(|release| release.release_title)
+        .collect::<Vec<_>>();
+    assert!(
+        submitted.contains(&season_only) || standby.contains(&season_only),
+        "the season-only result must be grabbable by the episode scope; \
+         submitted={submitted:?} standby={standby:?}"
     );
 }

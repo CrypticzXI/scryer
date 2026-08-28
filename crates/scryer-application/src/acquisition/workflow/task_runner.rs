@@ -341,6 +341,8 @@ struct BackgroundAcquisitionCycleState {
     season_pack_attempted: HashSet<(String, u32)>,
     season_pack_grabbed: HashSet<(String, u32)>,
     season_pack_viable: HashSet<(String, u32)>,
+    /// Episode-shaped releases a season query surfaced. Merged into the episode
+    /// scope's own results — never a substitute for its query.
     season_candidates: HashMap<(String, u32), Vec<IndexerSearchResult>>,
     grabbed_urls: HashSet<String>,
     attempted_urls_by_route: Vec<(DownloadRouteKey, String)>,
@@ -401,11 +403,9 @@ impl BackgroundAcquisitionCycleCoordinator {
         let mut state = self.lock();
         let cached = state.season_candidates.entry(key.clone()).or_default();
         for candidate in candidates {
-            let duplicate = cached.iter().any(|existing| {
-                existing.indexer_id == candidate.indexer_id
-                    && existing.guid == candidate.guid
-                    && existing.title == candidate.title
-            });
+            let duplicate = cached
+                .iter()
+                .any(|existing| same_indexer_release(existing, &candidate));
             if !duplicate {
                 cached.push(candidate);
             }
@@ -591,7 +591,10 @@ async fn recovered_scope_episode_ids(app: &AppUseCase, scope: &SubmissionScope) 
     }
 }
 
-async fn restore_anchor_standby_releases(
+/// Put back a standby list that a replacement write cleared but did not
+/// refill. `persist_standby_candidates` deletes before it inserts, so every
+/// caller that can fail partway needs this.
+async fn restore_standby_releases(
     app: &AppUseCase,
     anchor: &AcquisitionScopeState,
     standby_releases: &[PendingRelease],
@@ -614,10 +617,15 @@ async fn restore_anchor_standby_releases(
                 wanted_item_id = anchor.id.as_str(),
                 release = standby.release_title.as_str(),
                 error = %error,
-                "series-pack search: failed to restore anchor standby candidate"
+                "failed to restore standby candidate"
             );
         }
     }
+}
+
+/// Two results that are the same posting from the same indexer.
+fn same_indexer_release(left: &IndexerSearchResult, right: &IndexerSearchResult) -> bool {
+    left.indexer_id == right.indexer_id && left.guid == right.guid && left.title == right.title
 }
 
 fn is_series_pack_candidate(candidate: &IndexerSearchResult) -> bool {
@@ -834,7 +842,7 @@ async fn try_series_pack_for_title(
         )
         .await
         {
-            restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+            restore_standby_releases(app, anchor, &preserved_standby).await;
             continue;
         }
 
@@ -846,7 +854,7 @@ async fn try_series_pack_for_title(
                 release = candidate.title.as_str(),
                 "series-pack search: evaluated candidate lost parsed metadata"
             );
-            restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+            restore_standby_releases(app, anchor, &preserved_standby).await;
             continue;
         };
         let outcome = try_saved_candidates(
@@ -875,7 +883,7 @@ async fn try_series_pack_for_title(
                 )
             }
             StandbyRecoveryOutcome::Exhausted { .. } => {
-                restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+                restore_standby_releases(app, anchor, &preserved_standby).await;
                 continue;
             }
         };
@@ -892,7 +900,7 @@ async fn try_series_pack_for_title(
             )
             .await;
         } else {
-            restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+            restore_standby_releases(app, anchor, &preserved_standby).await;
         }
         return Ok(match scope {
             Some(scope) => {
@@ -1738,6 +1746,9 @@ async fn process_single_target(
                     }
                 };
 
+                // The season query can surface episode-shaped releases the
+                // narrower episode query never returns. Keep them for the
+                // episode scopes; only the *substitution* was the defect.
                 cycle.cache_season_candidates(
                     &season_key,
                     pack_results
@@ -1757,11 +1768,14 @@ async fn process_single_target(
                     // bar to name.
                     record_release_decision(app, item, &title, candidate, decision_code, None, now)
                         .await;
-                    if matches!(
-                        decision_code,
-                        ReleaseAutoDecisionCode::PendingDelay
-                            | ReleaseAutoDecisionCode::AlreadyActive
-                    ) {
+                    // `AlreadyActive` only. That pack is already downloading,
+                    // so searching its episodes would duplicate it. `PendingDelay`
+                    // means the delay profile chose to *wait* — not that the pack
+                    // won — and suppressing the episode lane for the whole delay
+                    // window is a decision the profile never made. The delayed
+                    // pack still parks in `pending_releases` and is re-judged
+                    // against whatever lands meanwhile when the window expires.
+                    if matches!(decision_code, ReleaseAutoDecisionCode::AlreadyActive) {
                         cycle.mark_season_pack_viable(&season_key);
                     }
                 }
@@ -2049,8 +2063,8 @@ async fn process_single_target(
                                         pack_password,
                                     )
                                     .await;
-                                if !defer && let Some(release_name) = pack_title_norm {
-                                    if let Err(error) = app
+                                if !defer && let Some(release_name) = pack_title_norm
+                                    && let Err(error) = app
                                         .services
                                         .workflow
                                         .blocklist_repo
@@ -2073,7 +2087,6 @@ async fn process_single_target(
                                             "failed to persist blocklist entry for failed season pack grab"
                                         );
                                     }
-                                }
                                 if !submit_unavailable {
                                     break 'season_pack_candidates;
                                 }
@@ -2127,7 +2140,11 @@ async fn process_single_target(
         "background acquisition: searching indexers"
     );
 
-    let cached_results = search_season
+    // Anything this scope's season query already surfaced, restricted to the
+    // indexers this scope still needs. It is *added* to the episode query's own
+    // results, not used in place of them: substituting converged the scope on a
+    // query it never ran.
+    let season_extras = search_season
         .map(|season| cycle.season_candidates(&(title.id.clone(), season)))
         .unwrap_or_default()
         .into_iter()
@@ -2138,46 +2155,46 @@ async fn process_single_target(
                 .is_some_and(|indexer_id| uncovered.contains(indexer_id))
         })
         .collect::<Vec<_>>();
-    let cached_results = app
-        .evaluate_search_results_for_subject(&search_title, &subject, cached_results, false)
-        .await;
 
-    // A complete season query already discovered these episode candidates.
-    // Search the individual episode only when that reusable corpus has no
-    // eligible result for this scope.
-    let results = if cached_results
-        .iter()
-        .any(|candidate| candidate.auto_eligible == Some(true))
+    let mut scored = match app
+        .search_and_score_subject_restricted(
+            &search_title,
+            &subject,
+            "background_acquisition",
+            SearchMode::Auto,
+            tokio_util::sync::CancellationToken::new(),
+            Some(uncovered),
+            Some(if target.is_hot {
+                BACKGROUND_HOT_TARGET_VALUE
+            } else {
+                BACKGROUND_COLD_TARGET_VALUE
+            }),
+        )
+        .await
     {
-        cached_results
-    } else {
-        match app
-            .search_and_evaluate_subject_restricted(
-                &search_title,
-                &subject,
-                "background_acquisition",
-                SearchMode::Auto,
-                tokio_util::sync::CancellationToken::new(),
-                Some(uncovered),
-                Some(if target.is_hot {
-                    BACKGROUND_HOT_TARGET_VALUE
-                } else {
-                    BACKGROUND_COLD_TARGET_VALUE
-                }),
-            )
-            .await
-        {
-            Ok(r) => r,
-            Err(err) => {
-                warn!(
-                    title_id = title.id.as_str(),
-                    error = %err,
-                    "background search failed"
-                );
-                return Ok(());
-            }
+        Ok(r) => r,
+        Err(err) => {
+            warn!(
+                title_id = title.id.as_str(),
+                error = %err,
+                "background search failed"
+            );
+            return Ok(());
         }
     };
+    for candidate in season_extras {
+        if !scored
+            .iter()
+            .any(|existing| same_indexer_release(existing, &candidate))
+        {
+            scored.push(candidate);
+        }
+    }
+    // One evaluation over the union, so the merged rows are ranked by the same
+    // comparator as the rest rather than appended past it.
+    let results = app
+        .evaluate_search_results_for_subject(&search_title, &subject, scored, false)
+        .await;
 
     // Cooldown state, not cadence: the upgrade policy and failed-grab handling
     // read when this scope last actually searched.
@@ -2975,9 +2992,111 @@ async fn process_single_target(
         );
     }
 
-    // No grab this cycle: the scope's coverage now reflects every indexer that
-    // answered, so the cursor will not re-search them — new postings arrive via
-    // RSS, and any still-uncovered indexers are retried on a later rotation.
+    // No grab this cycle. Coverage was recorded when the search returned, so
+    // the cursor will not re-search these indexers — retain the ranked
+    // remainder as standby and the next cycle replays it without an indexer
+    // query. Without this the scope is converged with no corpus behind it, and
+    // acquisition stops for it until the long-tail backstop, an RSS hit, or an
+    // operator trigger.
+    //
+    // A partial write is the same failure one step later: `persist_standby_candidates`
+    // clears the existing list before inserting, so a `false` return can leave
+    // fewer rows than it removed. Drop the coverage in that case and let the
+    // cursor come back.
+    let preserved_standby = match app
+        .services
+        .workflow
+        .pending_releases
+        .list_standby_pending_releases_for_wanted_item(&item.id)
+        .await
+    {
+        Ok(preserved) => preserved,
+        Err(error) => {
+            // `persist_standby_candidates` clears before it writes, so a list we
+            // could not snapshot is a list we must not touch.
+            warn!(
+                wanted_item_id = item.id.as_str(),
+                error = %error,
+                "failed to snapshot standby candidates; leaving the saved list untouched"
+            );
+            return Ok(());
+        }
+    };
+    // The walk above parks delayed and age-held candidates as `Waiting`. A
+    // second `Standby` row for one of those would give two lanes a claim on the
+    // same release: the standby walk re-parks its copy as `Waiting` too, and the
+    // delay promoter then has two rows to grab. Ambiguous-identity parks are
+    // `NeedsReview` and are never grabbed automatically, so they need no
+    // exclusion — which is what makes this waiting-only listing the right one.
+    let waiting_urls = match app
+        .services
+        .workflow
+        .pending_releases
+        .list_pending_releases_for_wanted_item(&item.id)
+        .await
+    {
+        Ok(waiting) => waiting
+            .into_iter()
+            .filter_map(|release| release.release_url)
+            .collect::<HashSet<String>>(),
+        Err(error) => {
+            warn!(
+                wanted_item_id = item.id.as_str(),
+                error = %error,
+                "failed to read waiting pending releases; leaving the saved standby list untouched"
+            );
+            return Ok(());
+        }
+    };
+    // Re-read the blocklist: a definitive grab failure in the walk above wrote
+    // entries the loop's snapshot predates, and retaining a release this cycle
+    // just burned would hand the next walk a row it must immediately skip.
+    let retention_blocklist = app.load_title_release_blocklist_signatures(&title.id).await;
+    let retention_complete = persist_standby_candidates(
+        app,
+        item,
+        title,
+        &results,
+        0,
+        now,
+        &failed_routes,
+        &retention_blocklist,
+        |candidate| {
+            candidate
+                .canonical_download_source()
+                .is_some_and(|(source, _)| !waiting_urls.contains(&source))
+        },
+    )
+    .await;
+    // `persist_standby_candidates` clears before it inserts, so both an empty
+    // list and an incomplete write mean the scope may now hold less than it did.
+    // Neither may leave it converged with nothing to walk.
+    let retained_standby = app
+        .services
+        .workflow
+        .pending_releases
+        .list_standby_pending_releases_for_wanted_item(&item.id)
+        .await
+        .unwrap_or_default();
+    if !retention_complete || retained_standby.is_empty() {
+        if !preserved_standby.is_empty() {
+            // An upgrade search that rejects everything must not cost the scope
+            // the corpus its last search earned.
+            restore_standby_releases(app, item, &preserved_standby).await;
+        } else if let Some(scope_key) = convergence_scope_key.as_deref()
+            && !retention_complete
+        {
+            warn!(
+                title_id = title.id.as_str(),
+                scope_key,
+                "standby retention failed with nothing to fall back on; re-opening scope coverage"
+            );
+            app.prune_scope_key_coverage(scope_key, None).await;
+        }
+        // A complete write with nothing worth keeping is a scope with no
+        // acceptable release. It stays converged, or it re-searches forever.
+    }
+
     Ok(())
 }
 

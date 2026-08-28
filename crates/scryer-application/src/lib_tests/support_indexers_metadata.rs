@@ -176,6 +176,13 @@ pub(super) struct TrackingIndexerClient {
     pub(super) title_pack_titles: Vec<String>,
     pub(super) fail_scoped_queries: bool,
     pub(super) report_routed_indexers_fired: bool,
+    /// Overrides the default 1970 publication date, so a delay profile can
+    /// actually hold the results this stand-in returns.
+    pub(super) published_at: Option<String>,
+    /// Stamp each result with the first routed indexer id, the way a real
+    /// provider response is attributed. Off by default: most tests do not care,
+    /// and coverage-scoped filters key on this field.
+    pub(super) stamp_indexer_ids: bool,
 }
 
 impl TrackingIndexerClient {
@@ -202,6 +209,16 @@ impl TrackingIndexerClient {
 
     pub(super) fn reporting_routed_indexers_fired(mut self) -> Self {
         self.report_routed_indexers_fired = true;
+        self
+    }
+
+    pub(super) fn with_published_at(mut self, published_at: impl Into<String>) -> Self {
+        self.published_at = Some(published_at.into());
+        self
+    }
+
+    pub(super) fn stamping_indexer_ids(mut self) -> Self {
+        self.stamp_indexer_ids = true;
         self
     }
 }
@@ -231,6 +248,17 @@ impl IndexerClient for TrackingIndexerClient {
             season,
             episode,
         });
+        let mut routed_indexer_ids = indexer_routing
+            .iter()
+            .flat_map(|plan| plan.entries.iter())
+            .filter(|(_, entry)| entry.enabled)
+            .map(|(indexer_id, _)| indexer_id.clone())
+            .collect::<Vec<_>>();
+        routed_indexer_ids.sort();
+        let stamped_indexer_id = self
+            .stamp_indexer_ids
+            .then(|| routed_indexer_ids.first().cloned())
+            .flatten();
         let indexer_outcomes = if self.report_routed_indexers_fired {
             indexer_routing
                 .into_iter()
@@ -275,7 +303,7 @@ impl IndexerClient for TrackingIndexerClient {
                 .map(|release_title| {
                     let release_slug = release_title.replace([' ', '/'], ".");
                     IndexerSearchResult {
-                        indexer_id: None,
+                        indexer_id: stamped_indexer_id.clone(),
                         source: "nzbgeek".into(),
                         title: release_title.clone(),
                         link: Some(format!("https://example.invalid/info/{release_slug}")),
@@ -284,7 +312,11 @@ impl IndexerClient for TrackingIndexerClient {
                         )),
                         source_kind: Some(DownloadSourceKind::NzbUrl),
                         size_bytes: None,
-                        published_at: Some("1970-01-01T00:00:00Z".into()),
+                        published_at: Some(
+                            self.published_at
+                                .clone()
+                                .unwrap_or_else(|| "1970-01-01T00:00:00Z".into()),
+                        ),
                         thumbs_up: None,
                         thumbs_down: None,
                         indexer_languages: None,

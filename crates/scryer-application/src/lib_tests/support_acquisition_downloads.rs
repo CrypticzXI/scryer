@@ -1113,11 +1113,19 @@ pub(super) struct TrackingPendingReleaseRepo {
     pub(super) store: Arc<Mutex<Vec<PendingRelease>>>,
     pub(super) deleted_title_ids: Arc<Mutex<Vec<String>>>,
     pub(super) delete_error: Arc<Mutex<Option<String>>>,
+    /// Standby inserts allowed before the store starts refusing them. Models the
+    /// write that fails partway, which is the only way to reach the retention
+    /// recovery branch.
+    pub(super) standby_inserts_before_failure: Arc<Mutex<Option<usize>>>,
 }
 
 impl TrackingPendingReleaseRepo {
     pub(super) async fn fail_delete_for_title(&self, message: &str) {
         *self.delete_error.lock().await = Some(message.to_string());
+    }
+
+    pub(super) async fn fail_standby_insert_after(&self, allowed: usize) {
+        *self.standby_inserts_before_failure.lock().await = Some(allowed);
     }
 }
 
@@ -1144,6 +1152,17 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
         release: &PendingRelease,
         observation: &PendingReleaseObservation,
     ) -> AppResult<String> {
+        if release.status == PendingReleaseStatus::Standby {
+            let mut budget = self.standby_inserts_before_failure.lock().await;
+            if let Some(remaining) = budget.as_mut() {
+                if *remaining == 0 {
+                    return Err(AppError::Repository(
+                        "standby insert failed (test)".to_string(),
+                    ));
+                }
+                *remaining -= 1;
+            }
+        }
         let mut store = self.store.lock().await;
         if !observation.release_identity.is_empty()
             && let Some(existing) = store.iter_mut().find(|existing| {

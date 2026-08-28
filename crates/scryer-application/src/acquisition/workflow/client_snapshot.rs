@@ -1423,11 +1423,14 @@ pub(crate) async fn try_saved_candidates(
             standby.info_hash.as_deref(),
             &db_blocklist,
         ) {
+            // A blocklist entry is removable, so it is not evidence the release
+            // is bad — only that the operator does not want it now. Keep the row
+            // walkable rather than burning the corpus behind it.
             let _ = app
                 .services
                 .workflow
                 .pending_releases
-                .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
+                .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
                 .await;
             continue;
         }
@@ -1452,11 +1455,14 @@ pub(crate) async fn try_saved_candidates(
         }
 
         if dl_snapshot.is_active(&standby.release_title) {
+            // The scope is covered for now, but that download can still fail.
+            // Expiring the row here is what leaves the next failure with no
+            // corpus to walk.
             let _ = app
                 .services
                 .workflow
                 .pending_releases
-                .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
+                .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
                 .await;
             return StandbyRecoveryOutcome::Active {
                 scope: standby_scope,
@@ -1600,10 +1606,19 @@ where
         }
         let decision_code =
             effective_auto_decision_code_for_route(candidate, failed_routes, db_blocklist);
+        // Transient holds are kept, not dropped. A delayed release becomes
+        // grabbable when its window ends, an active one when that download
+        // fails, and a route-unavailable one when the client comes back — none
+        // of them is evidence about the release itself. Dropping them is how a
+        // scope ends up converged with an empty corpus. A blocklisted release is
+        // *not* here on purpose: the walk that just burned it, or the operator
+        // who blocked it, means there is no reason to write the row fresh.
         if !decision_code.is_eligible()
             && !matches!(
                 decision_code,
-                ReleaseAutoDecisionCode::PendingDelay | ReleaseAutoDecisionCode::AlreadyActive
+                ReleaseAutoDecisionCode::PendingDelay
+                    | ReleaseAutoDecisionCode::AlreadyActive
+                    | ReleaseAutoDecisionCode::DownloadClientUnavailable
             )
         {
             // A fact about the *scope*, not about this candidate: the ranked

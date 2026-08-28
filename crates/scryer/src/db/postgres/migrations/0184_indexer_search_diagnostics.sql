@@ -6,6 +6,11 @@ CREATE TABLE IF NOT EXISTS indexer_search_runs (
     query_signature TEXT NOT NULL,
     branch TEXT NOT NULL,
     page INTEGER,
+    -- Reserved for the per-strategy search corpus (plan 151): the provider
+    -- offset this run requested and the next offset it advertised. Nothing
+    -- reads or writes them yet.
+    provider_offset INTEGER,
+    next_provider_offset INTEGER,
     range_min_size BIGINT,
     range_max_size BIGINT,
     result_count INTEGER NOT NULL,

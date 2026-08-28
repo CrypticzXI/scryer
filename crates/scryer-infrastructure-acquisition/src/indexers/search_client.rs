@@ -14,9 +14,8 @@ use scryer_application::{
     IndexerSearchCompletion, IndexerSearchIncompleteReason, IndexerSearchLearningContext,
     IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
     IndexerSearchOutcome, IndexerSearchPageSink, IndexerSearchResponse, IndexerSearchResult,
-    IndexerSearchRunWrite,
-    IndexerStatsTracker, IndexerSystemBackoff, NewIndexerError, NormalizedIndexerSearchCandidate,
-    NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
+    IndexerSearchRunWrite, IndexerStatsTracker, IndexerSystemBackoff, NewIndexerError,
+    NormalizedIndexerSearchCandidate, NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
     RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
     ReusableIndexerSearchCandidate, RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest,
@@ -298,7 +297,6 @@ struct SearchDiagnosticsContext {
     provider_type: String,
     search_session_id: String,
     scope_key: String,
-    reusable_scope_key: String,
     query_signature: String,
     indexer_fingerprint: String,
     credentials: HashMap<String, String>,
@@ -339,23 +337,6 @@ impl SearchDiagnosticsContext {
             episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
             absolute_episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
         );
-        let reusable_scope_key =
-            if learning_context.subject_kind == ReleaseSearchSubjectKind::Episode {
-                season.map_or_else(
-                    || scope_key.clone(),
-                    |season| {
-                        format!(
-                            "{}:{}:{}:{}:-:-",
-                            learning_context.title_id.trim(),
-                            learning_context.facet.trim().to_ascii_lowercase(),
-                            ReleaseSearchSubjectKind::Season.as_str(),
-                            season,
-                        )
-                    },
-                )
-            } else {
-                scope_key.clone()
-            };
         let query_signature = digest_json(
             HashDomain::IndexerQuerySignature,
             &serde_json::json!({
@@ -380,7 +361,6 @@ impl SearchDiagnosticsContext {
             provider_type: config.provider_type.clone(),
             search_session_id: learning_context.search_session_id.clone(),
             scope_key,
-            reusable_scope_key,
             query_signature,
             indexer_fingerprint,
             credentials: indexer_credentials(config),
@@ -509,7 +489,7 @@ impl SearchDiagnosticsContext {
             .repository
             .list_reusable_search_candidates(
                 &self.indexer_id,
-                &self.reusable_scope_key,
+                &self.scope_key,
                 &self.indexer_fingerprint,
                 Utc::now(),
                 REUSE_LIMIT,
@@ -573,7 +553,9 @@ impl SearchDiagnosticsContext {
             .map(|record| reusable_candidate_from_record(record, config, &self.credentials))
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| {
-                AppError::Repository("persisted indexer candidate could not be rehydrated".to_string())
+                AppError::Repository(
+                    "persisted indexer candidate could not be rehydrated".to_string(),
+                )
             })
     }
 }
@@ -2664,7 +2646,9 @@ impl MultiIndexerSearchClient {
                                 label: strategy_label,
                                 title_guard_mode,
                                 request_fired: false,
-                                response: Err(AppError::canceled("indexer scoring pipeline closed")),
+                                response: Err(AppError::canceled(
+                                    "indexer scoring pipeline closed",
+                                )),
                                 page_reservation: None,
                                 elapsed: std::time::Duration::ZERO,
                                 retry_after: None,
@@ -9320,6 +9304,7 @@ mod tests {
     }
 
     #[derive(Default)]
+    #[allow(clippy::type_complexity)]
     struct InMemorySearchLearningRepository {
         records: StdArc<StdMutex<HashMap<IndexerSearchLearningKey, IndexerSearchLearningRecord>>>,
         diagnostics:
