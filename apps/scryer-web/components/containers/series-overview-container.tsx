@@ -308,6 +308,7 @@ type SeriesOverviewSnapshotTitle = TitleDetail & {
 
 type SeriesOverviewContainerProps = {
   titleId: string;
+  fullBleedHero?: boolean;
   onTitleNotFound?: () => void;
   onBackToList?: () => void;
   onTitleResolved?: (title: OverviewTitleTarget) => void;
@@ -346,6 +347,7 @@ function retainEquivalentSnapshot<T>(current: T, next: T): T {
 
 export const SeriesOverviewContainer = React.memo(function SeriesOverviewContainer({
   titleId,
+  fullBleedHero,
   onTitleNotFound,
   onBackToList,
   onTitleResolved,
@@ -1796,6 +1798,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     <>
       <SeriesOverviewView
         canManageTitle={canManageTitle}
+        fullBleedHero={fullBleedHero}
         loading={loading}
         hydrating={hydrating}
         title={title}

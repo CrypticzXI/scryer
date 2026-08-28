@@ -7,6 +7,7 @@ import type {
   EpisodeMediaFile,
 } from "@/components/containers/series-overview-container";
 import { MediaFilesOnDiskPanel } from "@/components/common/media-files-on-disk-panel";
+import { TitleFilesOnDiskRail } from "@/components/common/title-files-on-disk-rail";
 import { WatchInMediaServerMenu } from "@/components/common/watch-in-media-server-menu";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { selectorId } from "@/lib/utils/dom-ids";
@@ -78,23 +79,25 @@ export function EpisodeDetailsPanel({
           </div>
         ) : null}
         </div>
-      <MediaFilesOnDiskPanel<EpisodeMediaFile>
-        emptyMessage={t("title.noFilesTracked")}
-        emptyHint={t("title.noFilesTrackedHint")}
-        mediaFiles={mediaFiles}
-        subtitleDownloads={subtitleDownloads}
-        onRefreshSubtitles={onRefreshSubtitles}
-        onDeleteFile={onDeleteFile}
-        onMakePrimaryFile={onMakePrimaryFile}
-        primaryFileUpdatingId={primaryMovieFileUpdatingId}
-        showPrimaryRoleBadge
-        fileRowIdPrefix="series-overview-episode-media-file"
-        filePathIdPrefix="series-overview-episode-media-file-path"
-        roleIdPrefix="series-overview-episode-media-file-role"
-        subtitleSearchIdPrefix="series-overview-episode-search-subtitles"
-        deleteFileIdPrefix="series-overview-episode-delete-file"
-        makePrimaryFileIdPrefix="series-overview-episode-make-primary-file"
-      />
+      <TitleFilesOnDiskRail>
+        <MediaFilesOnDiskPanel<EpisodeMediaFile>
+          emptyMessage={t("title.noFilesTracked")}
+          emptyHint={t("title.noFilesTrackedHint")}
+          mediaFiles={mediaFiles}
+          subtitleDownloads={subtitleDownloads}
+          onRefreshSubtitles={onRefreshSubtitles}
+          onDeleteFile={onDeleteFile}
+          onMakePrimaryFile={onMakePrimaryFile}
+          primaryFileUpdatingId={primaryMovieFileUpdatingId}
+          showPrimaryRoleBadge
+          fileRowIdPrefix="series-overview-episode-media-file"
+          filePathIdPrefix="series-overview-episode-media-file-path"
+          roleIdPrefix="series-overview-episode-media-file-role"
+          subtitleSearchIdPrefix="series-overview-episode-search-subtitles"
+          deleteFileIdPrefix="series-overview-episode-delete-file"
+          makePrimaryFileIdPrefix="series-overview-episode-make-primary-file"
+        />
+      </TitleFilesOnDiskRail>
     </div>
   );
 }

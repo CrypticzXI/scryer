@@ -558,8 +558,8 @@ body {
   border-right: 1px solid var(--scry-border3);
   background: var(--scry-shell-side-bg);
   box-shadow:
-    inset -1px 0 0 color-mix(in srgb, var(--scry-border3) 78%, transparent),
-    12px 0 28px rgba(28, 39, 68, 0.08);
+    inset -1px 0 0 color-mix(in srgb, var(--scry-border3) 48%, transparent),
+    16px 0 42px rgba(28, 39, 68, 0.035);
 }
 
 [data-slot="global-search-panel"] {

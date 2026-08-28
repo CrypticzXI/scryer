@@ -10,7 +10,6 @@ import {
   Edit,
   Eye,
   EyeOff,
-  FolderOpen,
   FolderPen,
   LayoutGrid,
   LayoutList,
@@ -66,6 +65,7 @@ import {
   MediaFilesOnDiskPanel,
   type MediaFileOnDisk,
 } from "@/components/common/media-files-on-disk-panel";
+import { TitleFilesOnDiskRail } from "@/components/common/title-files-on-disk-rail";
 import {
   MediaRenamePlanPanel,
   type MediaRenamePlan,
@@ -1635,74 +1635,71 @@ function TitleContextPanel({
         ) : null}
 
         <div className="mt-3 space-y-3">
-          <TitleWorkspaceSectionCard>
-            <TitleWorkspaceSectionHeader
-              icon={FolderOpen}
-              title={t("title.filesOnDisk")}
-              action={
-                <Button
-                  id={`title-context-rename-preview-${title.id}`}
-                  data-ui="title-context-rename-preview"
-                  data-title-id={title.id}
-                  type="button"
-                  variant="primary"
-                  size="sm"
-                  className="h-[34px] shrink-0 justify-center gap-2 rounded-md border border-transparent !bg-primary px-3 text-xs font-semibold !text-primary-foreground shadow-sm hover:!bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)]"
-                  onClick={() => {
-                    void handlePreviewRename();
-                  }}
-                  disabled={renamePreviewing || renameApplying}
-                >
-                  {renamePreviewing ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                  <span>
-                    {renamePreviewing
-                      ? t("rename.previewing")
-                      : t("rename.previewButton")}
-                  </span>
-                </Button>
-              }
-            />
-            <div className="border-t border-[var(--scry-line3)] pt-3">
-              <MediaFilesOnDiskPanel
-                emptyMessage={t("title.noFilesTracked")}
-                emptyHint={t("title.noFilesTrackedHint")}
-                mediaFiles={titleMediaFiles}
-                subtitleDownloads={externalSubtitles}
-                onRefreshSubtitles={onRefreshSubtitles}
-                onDeleteFile={(fileId) => onDeleteMediaFile(title, fileId)}
-                deletingFileIds={deletingMediaFileIds}
-                onMakePrimaryFile={
-                  title.facet === "MOVIE"
-                    ? (fileId) => onMakePrimaryMediaFile(title, fileId)
-                    : undefined
-                }
-                primaryFileUpdatingId={primaryMediaFileUpdatingId}
-                showPrimaryRoleBadge
-                fileRowIdPrefix={`title-context-file-row-${title.id}`}
-                filePathIdPrefix={`title-context-file-path-${title.id}`}
-                roleIdPrefix={`title-context-file-role-${title.id}`}
-                subtitleSearchIdPrefix={`title-context-file-search-subtitles-${title.id}`}
-                deleteFileIdPrefix={`title-context-file-delete-${title.id}`}
-                makePrimaryFileIdPrefix={`title-context-file-make-primary-${title.id}`}
-                presentation="selected-title"
-              />
-            </div>
-            {renamePlan ? (
-              <MediaRenamePlanPanel
-                plan={renamePlan}
-                applying={renameApplying}
-                applyDisabled={renameApplying || renamePlan.renamable === 0}
-                applyButtonId={`title-context-rename-apply-${title.id}`}
-                onApply={() => {
-                  void handleApplyRename();
+          <TitleFilesOnDiskRail
+            action={
+              <Button
+                id={`title-context-rename-preview-${title.id}`}
+                data-ui="title-context-rename-preview"
+                data-title-id={title.id}
+                type="button"
+                variant="primary"
+                size="sm"
+                className="h-[34px] shrink-0 justify-center gap-2 rounded-md border border-transparent !bg-primary px-3 text-xs font-semibold !text-primary-foreground shadow-sm hover:!bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)]"
+                onClick={() => {
+                  void handlePreviewRename();
                 }}
-              />
-            ) : null}
-          </TitleWorkspaceSectionCard>
+                disabled={renamePreviewing || renameApplying}
+              >
+                {renamePreviewing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+                <span>
+                  {renamePreviewing
+                    ? t("rename.previewing")
+                    : t("rename.previewButton")}
+                </span>
+              </Button>
+            }
+            footer={
+              renamePlan ? (
+                <MediaRenamePlanPanel
+                  plan={renamePlan}
+                  applying={renameApplying}
+                  applyDisabled={renameApplying || renamePlan.renamable === 0}
+                  applyButtonId={`title-context-rename-apply-${title.id}`}
+                  onApply={() => {
+                    void handleApplyRename();
+                  }}
+                />
+              ) : null
+            }
+          >
+            <MediaFilesOnDiskPanel
+              emptyMessage={t("title.noFilesTracked")}
+              emptyHint={t("title.noFilesTrackedHint")}
+              mediaFiles={titleMediaFiles}
+              subtitleDownloads={externalSubtitles}
+              onRefreshSubtitles={onRefreshSubtitles}
+              onDeleteFile={(fileId) => onDeleteMediaFile(title, fileId)}
+              deletingFileIds={deletingMediaFileIds}
+              onMakePrimaryFile={
+                title.facet === "MOVIE"
+                  ? (fileId) => onMakePrimaryMediaFile(title, fileId)
+                  : undefined
+              }
+              primaryFileUpdatingId={primaryMediaFileUpdatingId}
+              showPrimaryRoleBadge
+              fileRowIdPrefix={`title-context-file-row-${title.id}`}
+              filePathIdPrefix={`title-context-file-path-${title.id}`}
+              roleIdPrefix={`title-context-file-role-${title.id}`}
+              subtitleSearchIdPrefix={`title-context-file-search-subtitles-${title.id}`}
+              deleteFileIdPrefix={`title-context-file-delete-${title.id}`}
+              makePrimaryFileIdPrefix={`title-context-file-make-primary-${title.id}`}
+              presentation="selected-title"
+            />
+          </TitleFilesOnDiskRail>
 
           <TitleContextMoreLikeThisStrip
             items={moreLikeThisItems}
@@ -4088,6 +4085,7 @@ export function MediaContentView({
                         ) : null}
                         <SeriesOverviewContainer
                           titleId={seriesSidePanelTitleId}
+                          fullBleedHero
                           initialEpisodeId={routeOverviewEpisodeId}
                           onTitleNotFound={handleSelectedOverviewBackToList}
                           onBackToList={handleSelectedOverviewBackToList}

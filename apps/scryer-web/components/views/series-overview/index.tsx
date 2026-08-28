@@ -112,6 +112,7 @@ function compareEpisodeQueueItems(
 
 type Props = {
   canManageTitle: boolean;
+  fullBleedHero?: boolean;
   loading: boolean;
   hydrating: boolean;
   title: TitleDetail | null;
@@ -169,6 +170,7 @@ type Props = {
 
 function SeriesOverviewViewImpl({
   canManageTitle,
+  fullBleedHero = false,
   loading,
   hydrating,
   title,
@@ -897,7 +899,11 @@ function SeriesOverviewViewImpl({
     <>
       <div className="space-y-4">
       <Card
-        className="relative overflow-hidden p-0"
+        className={
+          fullBleedHero
+            ? "relative -mx-4 -mt-4 overflow-hidden rounded-none border-0 p-0 sm:-mx-5 sm:-mt-5"
+            : "relative overflow-hidden p-0"
+        }
         style={overviewBackdropUrl ? { backdropFilter: "none", WebkitBackdropFilter: "none" } : undefined}
       >
         {overviewBackdropUrl ? (
@@ -920,6 +926,9 @@ function SeriesOverviewViewImpl({
                   "linear-gradient(to top, var(--color-card) 0%, var(--color-card) 5%, color-mix(in srgb, var(--color-card) 82%, transparent), color-mix(in srgb, var(--color-card) 52%, transparent)), linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012) 40%, transparent 100%)",
               }}
             />
+            {fullBleedHero ? (
+              <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-b from-transparent to-[var(--scry-bg)]" />
+            ) : null}
           </div>
         ) : null}
         <CardContent className="relative p-4">

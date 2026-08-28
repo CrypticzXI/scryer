@@ -1,4 +1,5 @@
 import type { SeriesMovieLink } from "@/components/containers/series-overview-container";
+import type { ReactNode } from "react";
 import { useTranslate } from "@/lib/context/translate-context";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitlePoster } from "@/components/title-poster";
@@ -19,9 +20,14 @@ import { titleCastOriginalCredits } from "@/lib/utils/title-cast";
 type SeriesMoviePanelProps = {
   link: SeriesMovieLink;
   hasFile?: boolean;
+  filesOnDisk?: ReactNode;
 };
 
-export function SeriesMoviePanel({ link, hasFile }: SeriesMoviePanelProps) {
+export function SeriesMoviePanel({
+  link,
+  hasFile,
+  filesOnDisk,
+}: SeriesMoviePanelProps) {
   const t = useTranslate();
   const movie = link.movie;
   const runtime = formatRuntimeFromMinutes(movie.runtimeMinutes);
@@ -88,6 +94,7 @@ export function SeriesMoviePanel({ link, hasFile }: SeriesMoviePanelProps) {
           </div>
         </div>
       </div>
+      {filesOnDisk}
       <TitleCastStrip credits={titleCastOriginalCredits(movie.credits)} />
       <TitleDubCastStrip credits={movie.credits} />
     </div>

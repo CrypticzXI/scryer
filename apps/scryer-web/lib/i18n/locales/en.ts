@@ -1209,6 +1209,7 @@ const en: LocaleDictionary = {
   "title.noTrackedSeasons": "No seasons are tracked for this show yet.",
   "title.fetchingData": "Fetching data",
   "title.filesOnDisk": "Files on Disk",
+  "title.files": "Files",
   "title.noFilesTracked": "No files tracked.",
   "title.noFilesTrackedHint": "Run a library scan to detect files on disk.",
   "title.configureRootFoldersHint":
