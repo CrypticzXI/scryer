@@ -314,6 +314,12 @@ fn submission_blocks_search_for_wanted_item(
     // child episodes across later scheduler cycles, after the cycle-local pack
     // proposal is gone. Occupied scopes retain queued-pseudo-incumbent behavior
     // so genuine upgrade searches can still compare against an in-flight grab.
+    //
+    // One escape: a claim still `Downloading` past the staleness bound is a
+    // stalled swarm, not a claim — a dead torrent never fails on its own, and
+    // without this the scope would freeze until an operator noticed. The scope
+    // re-enters the D18 comparison (Sonarr's `QueueSpecification` shape), so
+    // only a strictly better release is grabbed beside the stall.
     let tracked_submission_is_live = tracked_state.is_some_and(|state| {
         matches!(
             state,
@@ -324,6 +330,10 @@ fn submission_blocks_search_for_wanted_item(
         )
     });
     if !scope_is_occupied
+        && !dl_snapshot.active_downloading_is_stale(
+            submission.download_client_id.as_deref(),
+            &submission.download_client_item_id,
+        )
         && (tracked_submission_is_live
             || submission_is_active(submission, dl_snapshot))
     {
@@ -4370,6 +4380,8 @@ mod task_runner_tests {
             active_titles: Default::default(),
             active_client_ids: Default::default(),
             active_raw_item_id_counts: Default::default(),
+            stale_downloading_client_ids: Default::default(),
+            stale_downloading_raw_item_ids: Default::default(),
             completed_client_ids: Default::default(),
             completed_raw_item_id_counts: Default::default(),
             failed_by_download_id: Default::default(),
@@ -4390,6 +4402,8 @@ mod task_runner_tests {
             active_titles: Default::default(),
             active_client_ids: Default::default(),
             active_raw_item_id_counts: Default::default(),
+            stale_downloading_client_ids: Default::default(),
+            stale_downloading_raw_item_ids: Default::default(),
             completed_client_ids: Default::default(),
             completed_raw_item_id_counts: Default::default(),
             failed_by_download_id: Default::default(),
@@ -4489,6 +4503,56 @@ mod task_runner_tests {
             &snapshot,
             Some(scryer_domain::TrackedDownloadState::ImportBlocked),
             false,
+        ));
+    }
+
+    /// A claim still `Downloading` past the staleness bound stops suppressing
+    /// its empty scope: a dead swarm never fails on its own, and without the
+    /// escape the scope froze until an operator noticed. The scope falls back
+    /// to the D18 pseudo-incumbent comparison; a fresh download keeps the
+    /// suppression, and so does a stale one on a blind cycle.
+    #[test]
+    fn a_stale_downloading_claim_stops_blocking_its_empty_scope() {
+        let item = wanted_episode_item("title-bluey", "Bluey", 1);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-stalled");
+
+        // Fresh active download: suppressed, exactly the new rule.
+        let fresh = snapshot_with_job("job-stalled", false);
+        assert!(submission_blocks_search_for_wanted_item(
+            &submission,
+            &item,
+            None,
+            &fresh,
+            Some(scryer_domain::TrackedDownloadState::Downloading),
+            false,
+        ));
+
+        // The same download past the staleness bound: back to D18 comparison.
+        let mut stale = snapshot_with_job("job-stalled", false);
+        stale
+            .stale_downloading_client_ids
+            .insert(download_client_item_identity(Some("primary"), "job-stalled"));
+        stale
+            .stale_downloading_raw_item_ids
+            .insert("job-stalled".to_string());
+        assert!(!submission_blocks_search_for_wanted_item(
+            &submission,
+            &item,
+            None,
+            &stale,
+            Some(scryer_domain::TrackedDownloadState::Downloading),
+            false,
+        ));
+
+        // An occupied scope was never suppressed and stays comparison-based.
+        assert!(!submission_blocks_search_for_wanted_item(
+            &submission,
+            &item,
+            None,
+            &stale,
+            Some(scryer_domain::TrackedDownloadState::Downloading),
+            true,
         ));
     }
 

@@ -1,3 +1,10 @@
+/// How long an item may sit in `Downloading` before its claim on an empty
+/// scope stops suppressing background searches and falls back to the D18
+/// pseudo-incumbent comparison. A healthy download finishes well inside this;
+/// what exceeds it is the stalled-swarm shape that would otherwise freeze its
+/// scope indefinitely, since a dead torrent never fails on its own.
+pub(crate) const STALE_INITIAL_CLAIM_SECONDS: i64 = 24 * 60 * 60;
+
 /// Snapshot of the download client's current queue and recent history,
 /// fetched once per polling cycle to avoid repeated API calls.
 pub(crate) struct DownloadClientSnapshot {
@@ -9,6 +16,20 @@ pub(crate) struct DownloadClientSnapshot {
     /// Raw native item ID counts for legacy rows that predate configured
     /// client IDs. Used only when the raw ID is unique in the snapshot.
     active_raw_item_id_counts: std::collections::HashMap<String, usize>,
+    /// Active items that have been *downloading* longer than
+    /// [`STALE_INITIAL_CLAIM_SECONDS`], by exact identity and by raw item id.
+    ///
+    /// A live download suppresses background searches for the empty scope it
+    /// claims, but a claim this old is a stalled-swarm shape, not a claim — the
+    /// scope falls back to the D18 pseudo-incumbent comparison so a strictly
+    /// better release can still be acquired beside it. Only `Downloading`
+    /// qualifies: `Queued`/`Paused`/`Warning` are operator-visible states with
+    /// their own exits. Computed at snapshot build, where the full queue item
+    /// (state and `queued_at`) is in hand; an item without a parseable
+    /// `queued_at` never reads as stale, so clients that report no age keep
+    /// the suppression.
+    stale_downloading_client_ids: std::collections::HashSet<String>,
+    stale_downloading_raw_item_ids: std::collections::HashSet<String>,
     /// Download client item IDs of items that completed successfully.
     completed_client_ids: std::collections::HashSet<String>,
     completed_raw_item_id_counts: std::collections::HashMap<String, usize>,
@@ -241,11 +262,14 @@ impl DownloadClientSnapshot {
         let mut active_titles = std::collections::HashSet::new();
         let mut active_client_ids = std::collections::HashSet::new();
         let mut active_raw_item_id_counts = std::collections::HashMap::new();
+        let mut stale_downloading_client_ids = std::collections::HashSet::new();
+        let mut stale_downloading_raw_item_ids = std::collections::HashSet::new();
         let mut completed_client_ids = std::collections::HashSet::new();
         let mut completed_raw_item_id_counts = std::collections::HashMap::new();
         let mut failed_by_download_id = std::collections::HashMap::new();
         let mut queue_listing_failed = false;
         let mut history_listing_failed = false;
+        let now = chrono::Utc::now();
 
         // Fetch current queue
         match app.services.integrations.download_client.list_queue().await {
@@ -268,6 +292,25 @@ impl DownloadClientSnapshot {
                             *active_raw_item_id_counts
                                 .entry(item.download_client_item_id.clone())
                                 .or_insert(0) += 1;
+                            if item.state == DownloadQueueState::Downloading
+                                && item
+                                    .queued_at
+                                    .as_deref()
+                                    .and_then(crate::quality_profile::parse_published_at)
+                                    .is_some_and(|queued_at| {
+                                        now.signed_duration_since(queued_at).num_seconds()
+                                            >= STALE_INITIAL_CLAIM_SECONDS
+                                    })
+                            {
+                                stale_downloading_client_ids.insert(
+                                    download_client_item_identity(
+                                        Some(item.client_id.as_str()),
+                                        &item.download_client_item_id,
+                                    ),
+                                );
+                                stale_downloading_raw_item_ids
+                                    .insert(item.download_client_item_id.clone());
+                            }
                         }
                         _ => {}
                     }
@@ -352,6 +395,8 @@ impl DownloadClientSnapshot {
             active_titles,
             active_client_ids,
             active_raw_item_id_counts,
+            stale_downloading_client_ids,
+            stale_downloading_raw_item_ids,
             completed_client_ids,
             completed_raw_item_id_counts,
             failed_by_download_id,
@@ -410,6 +455,26 @@ impl DownloadClientSnapshot {
         let exact_key = download_client_item_identity(client_id, download_client_item_id);
         self.active_client_ids.contains(&exact_key)
             || self.active_raw_item_id_counts.get(download_client_item_id) == Some(&1)
+    }
+
+    /// Whether this item's live claim has gone stale: still `Downloading`, but
+    /// for longer than [`STALE_INITIAL_CLAIM_SECONDS`]. Mirrors
+    /// `has_active_client_item`'s two-way identity match; a blind cycle is
+    /// never stale (possibly-active must keep suppressing).
+    pub(crate) fn active_downloading_is_stale(
+        &self,
+        client_id: Option<&str>,
+        download_client_item_id: &str,
+    ) -> bool {
+        if self.queue_listing_failed {
+            return false;
+        }
+        let exact_key = download_client_item_identity(client_id, download_client_item_id);
+        self.stale_downloading_client_ids.contains(&exact_key)
+            || (self.active_raw_item_id_counts.get(download_client_item_id) == Some(&1)
+                && self
+                    .stale_downloading_raw_item_ids
+                    .contains(download_client_item_id))
     }
 
     fn has_completed_client_item(
@@ -1755,6 +1820,8 @@ mod client_snapshot_tests {
             active_titles: std::collections::HashSet::new(),
             active_client_ids: std::collections::HashSet::new(),
             active_raw_item_id_counts: std::collections::HashMap::new(),
+            stale_downloading_client_ids: std::collections::HashSet::new(),
+            stale_downloading_raw_item_ids: std::collections::HashSet::new(),
             completed_client_ids: std::collections::HashSet::new(),
             completed_raw_item_id_counts: std::collections::HashMap::new(),
             failed_by_download_id: std::collections::HashMap::new(),
