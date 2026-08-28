@@ -241,6 +241,12 @@ impl ApplicationMigrator {
                             "migrated legacy NZBGeek and DogNZB plugins to generic Newznab profiles"
                         );
                     }
+                    if report.skipped_indexer_configs > 0 {
+                        tracing::warn!(
+                            skipped_indexer_configs = report.skipped_indexer_configs,
+                            "legacy Newznab wrapper configurations were left unconverted; those indexers need operator attention"
+                        );
+                    }
                 }
                 _ => unreachable!("early migration registry and dispatcher must agree"),
             }

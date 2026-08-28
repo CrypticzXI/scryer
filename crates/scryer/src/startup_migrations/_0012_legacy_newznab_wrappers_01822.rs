@@ -15,24 +15,44 @@ fn legacy_profile_id(provider_type: &str) -> Option<&'static str> {
     }
 }
 
-fn migrated_config_json(
-    provider_type: &str,
-    config_json: Option<&str>,
-) -> Result<Option<String>, String> {
+/// What to do with one indexer configuration.
+enum LegacyConfigOutcome {
+    /// Not a legacy wrapper; leave it alone.
+    NotLegacy,
+    /// A legacy wrapper whose configuration converted cleanly.
+    Migrate(String),
+    /// A legacy wrapper whose stored configuration cannot be parsed.
+    ///
+    /// This migration is required at startup, so a conversion error here would
+    /// abort every boot until the row is repaired by hand — a boot loop earned
+    /// by one corrupt row the old plugin system never re-parsed. The row is
+    /// left untouched instead: that one indexer stays broken and visible, and
+    /// the application still starts.
+    Skip(String),
+}
+
+fn legacy_config_outcome(provider_type: &str, config_json: Option<&str>) -> LegacyConfigOutcome {
     let Some(profile_id) = legacy_profile_id(provider_type) else {
-        return Ok(None);
+        return LegacyConfigOutcome::NotLegacy;
     };
-    let mut value: Value = serde_json::from_str(config_json.unwrap_or("{}")).map_err(|error| {
-        format!("legacy {provider_type} configuration is invalid JSON: {error}")
-    })?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| format!("legacy {provider_type} configuration must be a JSON object"))?;
+    let mut value: Value = match serde_json::from_str(config_json.unwrap_or("{}")) {
+        Ok(value) => value,
+        Err(error) => {
+            return LegacyConfigOutcome::Skip(format!(
+                "legacy {provider_type} configuration is invalid JSON: {error}"
+            ));
+        }
+    };
+    let Some(object) = value.as_object_mut() else {
+        return LegacyConfigOutcome::Skip(format!(
+            "legacy {provider_type} configuration must be a JSON object"
+        ));
+    };
     object.insert(
         "profile_id".to_string(),
         Value::String(profile_id.to_string()),
     );
-    Ok(Some(value.to_string()))
+    LegacyConfigOutcome::Migrate(value.to_string())
 }
 
 fn legacy_plugin_name(name: &str, plugin_id: &str) -> String {
@@ -53,6 +73,9 @@ fn legacy_plugin_name(name: &str, plugin_id: &str) -> String {
 pub struct MigrationReport {
     pub indexer_configs: u64,
     pub plugin_installations: u64,
+    /// Legacy rows whose configuration could not be parsed and were left
+    /// untouched rather than aborting startup.
+    pub skipped_indexer_configs: u64,
 }
 
 pub async fn migrate(
@@ -65,10 +88,22 @@ pub async fn migrate(
         .map_err(|error| format!("failed to list indexer configurations: {error}"))?;
     let mut report = MigrationReport::default();
     for config in configs {
-        let Some(config_json) =
-            migrated_config_json(&config.provider_type, config.config_json.as_deref())?
-        else {
-            continue;
+        let config_json = match legacy_config_outcome(
+            &config.provider_type,
+            config.config_json.as_deref(),
+        ) {
+            LegacyConfigOutcome::NotLegacy => continue,
+            LegacyConfigOutcome::Migrate(config_json) => config_json,
+            LegacyConfigOutcome::Skip(error) => {
+                tracing::warn!(
+                    indexer_id = config.id.as_str(),
+                    provider_type = config.provider_type.as_str(),
+                    error = error.as_str(),
+                    "legacy Newznab wrapper configuration could not be converted; leaving the row for the operator"
+                );
+                report.skipped_indexer_configs += 1;
+                continue;
+            }
         };
         indexer_configs
             .update(IndexerConfigUpdate {
@@ -114,14 +149,14 @@ mod tests {
     #[test]
     fn legacy_wrappers_map_to_their_newznab_profiles_and_preserve_overrides() {
         for (provider_type, expected_profile) in [("nzbgeek", "nzbgeek"), ("DogNZB", "dognzb")] {
-            let migrated = migrated_config_json(
+            let LegacyConfigOutcome::Migrate(migrated) = legacy_config_outcome(
                 provider_type,
                 Some(
                     r#"{"additional_parameters":"attrs=poster","api_key":"secret","base_url":"https://custom.example.test","request_interval_ms":750}"#,
                 ),
-            )
-            .expect("legacy configuration should migrate")
-            .expect("legacy provider should produce an update");
+            ) else {
+                panic!("legacy provider should produce an update");
+            };
             let value: Value =
                 serde_json::from_str(&migrated).expect("migrated configuration should be JSON");
             assert_eq!(value["profile_id"], expected_profile);
@@ -143,15 +178,29 @@ mod tests {
 
     #[test]
     fn migration_ignores_nonlegacy_providers() {
-        assert_eq!(
-            migrated_config_json("newznab", Some(r#"{"profile_id":"nzbgeek"}"#))
-                .expect("generic Newznab configuration should be accepted"),
-            None
-        );
+        assert!(matches!(
+            legacy_config_outcome("newznab", Some(r#"{"profile_id":"nzbgeek"}"#)),
+            LegacyConfigOutcome::NotLegacy
+        ));
     }
 
+    /// A corrupt legacy row is skipped, never converted and never fatal: this
+    /// migration is required at startup, and an error here would be a boot
+    /// loop the operator cannot escape without database surgery.
     #[test]
-    fn migration_rejects_invalid_legacy_configuration_without_replacing_it() {
-        assert!(migrated_config_json("nzbgeek", Some("not-json")).is_err());
+    fn a_corrupt_legacy_configuration_is_skipped_not_fatal() {
+        assert!(matches!(
+            legacy_config_outcome("nzbgeek", Some("not-json")),
+            LegacyConfigOutcome::Skip(_)
+        ));
+        assert!(matches!(
+            legacy_config_outcome("dognzb", Some(r#"["not","an","object"]"#)),
+            LegacyConfigOutcome::Skip(_)
+        ));
+        // An absent configuration is an empty object, not a corrupt one.
+        assert!(matches!(
+            legacy_config_outcome("nzbgeek", None),
+            LegacyConfigOutcome::Migrate(_)
+        ));
     }
 }
