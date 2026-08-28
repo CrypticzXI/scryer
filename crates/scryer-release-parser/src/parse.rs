@@ -103,6 +103,22 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
         ParseDisposition::Parsed
     };
     let is_ambiguous = matches!(disposition, ParseDisposition::Ambiguous);
+    // Zones an ambiguous winner may safely treat as title text: the union over
+    // every contender close enough to have caused the ambiguity. Tokens outside
+    // this union are release metadata under *every* competing interpretation,
+    // so extracting structure-independent facts from them cannot leak a title
+    // word (issue #170).
+    let ambiguous_title_zone_union = (is_ambiguous && best_candidate_index.is_some()).then(|| {
+        let best_score = best_candidate_index
+            .and_then(|index| candidates.get(index))
+            .map(|candidate| candidate.raw_score)
+            .unwrap_or_default();
+        candidates
+            .iter()
+            .filter(|candidate| candidate.raw_score >= best_score.saturating_sub(8))
+            .flat_map(|candidate| candidate.zones.title_zones.iter().copied())
+            .collect::<Vec<_>>()
+    });
 
     if let Some(best_index) = best_candidate_index
         && let Some(best_candidate) = candidates.get_mut(best_index)
@@ -115,9 +131,21 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
                 best_candidate.enrichment = Some(enrichment);
             }
             ParseDisposition::Ambiguous => {
-                // Full enrichment is zone-dependent and unsafe on an ambiguous
-                // winner, but service-based source normalization is static and
-                // keeps AMZN/NF WEBRips reporting as WEB-DL.
+                // Title, season and episode assignment stay unresolved on an
+                // ambiguous winner, but the token-derived facts — languages,
+                // codecs, HDR, proper/repack — read the same under every
+                // competing interpretation. Enrich over the tokens outside the
+                // contenders' combined title zones so a required-language rule
+                // can still see `iTALiAN` on a parse whose numbering is
+                // ambiguous (issue #170).
+                if let Some(title_zone_union) = ambiguous_title_zone_union.as_ref() {
+                    let mut scoped = best_candidate.clone();
+                    scoped.zones.title_zones = title_zone_union.clone();
+                    let enrichment = enrich_candidate(&lexed.tokens, &scoped, inputs.raw_input);
+                    best_candidate.projected =
+                        project_final_metadata(best_candidate.projected.clone(), &enrichment);
+                    best_candidate.enrichment = Some(enrichment);
+                }
                 if let Some(normalized_source) = normalize_source_for_service(
                     best_candidate
                         .projected
@@ -141,7 +169,7 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
                 best_candidate
                     .projected
                     .parse_hints
-                    .push("enrichment_skipped_ambiguous".to_string());
+                    .push("enrichment:ambiguous_structure_independent".to_string());
             }
             ParseDisposition::Unparseable => {
                 if let Some(normalized_source) = normalize_source_for_service(
@@ -929,15 +957,37 @@ fn score_candidates(
     candidates
 }
 
+/// Identity evidence codes whose season/episode numbering came from the search
+/// context rather than the release name. Extend this list when a new identity
+/// family starts inferring; every entry is penalized by
+/// [`INFERRED_IDENTITY_PENALTY`] and excluded from manufacturing ambiguity
+/// against an explicitly parsed rival.
+const INFERRED_IDENTITY_EVIDENCE: &[&str] = &["context:season_episode_hint"];
+const INFERRED_IDENTITY_PENALTY: i32 = 12;
+const INFERRED_IDENTITY_PENALTY_REASON: &str = "identity:inferred_from_context";
+
+fn candidate_identity_is_inferred(candidate: &ReleaseParseCandidate) -> bool {
+    candidate
+        .reasons
+        .iter()
+        .any(|reason| reason.code == INFERRED_IDENTITY_PENALTY_REASON)
+}
+
 fn semantic_ambiguity_margin(candidates: &[ReleaseParseCandidate], best_index: usize) -> i32 {
     let Some(best_candidate) = candidates.get(best_index) else {
         return 0;
     };
     let best_signature = candidate_ambiguity_signature(best_candidate);
+    let best_is_inferred = candidate_identity_is_inferred(best_candidate);
     let second_best = candidates
         .iter()
         .enumerate()
         .filter(|(index, _)| *index != best_index)
+        // A context-inferred candidate is a fallback reading, not a competing
+        // interpretation of the name; it never renders an explicit winner
+        // ambiguous (issue #170). An inferred winner still contends with
+        // everything.
+        .filter(|(_, candidate)| best_is_inferred || !candidate_identity_is_inferred(candidate))
         .filter(|(_, candidate)| candidate_ambiguity_signature(candidate) != best_signature)
         .map(|(_, candidate)| candidate.raw_score)
         .max();
@@ -1568,6 +1618,22 @@ fn branch_identity(
     next.cursor = last_token + 1;
     next.raw_evidence.push(evidence.to_string());
     next.reasons.push(reason(evidence, family_bonus, None));
+    if INFERRED_IDENTITY_EVIDENCE.contains(&evidence) {
+        // Identity inferred from the search context, not read out of the name.
+        // Explicit release evidence must always outrank inferred numbering —
+        // a bare `S01` season pack is what the name *says*, while the episode
+        // number here is only what the search *asked for* — so context-only
+        // identity carries a confidence penalty large enough that a competing
+        // explicit parse clears the ambiguity margin. When inference is the
+        // only plausible reading, nothing explicit competes and the penalized
+        // candidate still wins (issue #170).
+        next.score -= INFERRED_IDENTITY_PENALTY;
+        next.reasons.push(reason(
+            INFERRED_IDENTITY_PENALTY_REASON,
+            -INFERRED_IDENTITY_PENALTY,
+            None,
+        ));
+    }
     for token_index in identity_start..=last_token {
         next.consumed_tokens.insert(token_index);
         if let Some(annotation) = annotations.get(token_index) {

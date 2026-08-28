@@ -790,8 +790,16 @@ fn service_tagged_webrip_normalizes_to_webdl() {
     );
 }
 
+/// A season-only token under an episode-scoped search is a season pack.
+///
+/// This test used to pin the opposite: the context hint projected the searched
+/// episode (`S04E03`) onto a name that only says `S04`. That inferred numbering
+/// outranking explicit evidence is the defect of issue #170 — coverage
+/// resolution maps a pack onto the searched episode downstream, so the parse
+/// must report what the name says. The inferred reading survives as a
+/// penalized, recorded fallback for names where nothing explicit parses.
 #[test]
-fn season_only_token_can_project_target_episode_from_required_context() {
+fn season_only_token_is_a_season_pack_even_under_an_episode_scoped_search() {
     let mut target = context(ContextFacetHint::Series, "Ironbound");
     target.known_years.push(2021);
     target.episodes = vec![ContextEpisode {
@@ -807,9 +815,20 @@ fn season_only_token_can_project_target_episode_from_required_context() {
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
 
-    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
-    assert_eq!(episode.season, Some(4));
-    assert_eq!(episode.episode_numbers, vec![3]);
+    assert_eq!(candidate.family, ParseFamily::SeasonPack);
+    assert_eq!(episode.season_numbers, vec![4]);
+    assert!(episode.full_season);
+    assert!(
+        episode.episode_numbers.is_empty(),
+        "the searched episode number appears nowhere in the name"
+    );
+    assert!(
+        analysis.candidates.iter().any(|candidate| candidate
+            .reasons
+            .iter()
+            .any(|reason| reason.code == "identity:inferred_from_context")),
+        "the inferred reading is still recorded"
+    );
 }
 
 #[test]
@@ -2717,5 +2736,85 @@ fn target_bank_prefers_specific_title_when_alias_and_episode_title_align() {
     assert_eq!(
         candidate.projected.normalized_title,
         "STARFALL IRON ECLIPSE"
+    );
+}
+
+/// Issue #170: a release whose name says `S01` and nothing more is a season
+/// pack. The episode number a context hint can infer is what the search asked
+/// for, not what the name says, so the explicit pack must win — unambiguously,
+/// with full enrichment, so a required-language rule sees `iTALiAN`.
+#[test]
+fn explicit_season_pack_outranks_context_inferred_episode_numbering() {
+    let mut target = context(ContextFacetHint::Series, "Quiet Meridian");
+    target.episodes = vec![ContextEpisode {
+        season: Some(1),
+        episode: Some(1),
+        absolute_number: None,
+        air_date: None,
+        title: None,
+        title_aliases: Vec::new(),
+    }];
+
+    let analysis = analyze_release_for_target(
+        "Quiet.Meridian.S01.iTALiAN.MULTi.1080p.DSNP.WEB-DL.DDP5.1.H.264-GRP",
+        &target,
+    );
+
+    assert!(
+        !analysis.is_ambiguous,
+        "explicit evidence must not be rendered ambiguous by an inferred fallback"
+    );
+    let best = analysis.best_candidate().expect("best candidate");
+    let episode = best.projected.episode.as_ref().expect("episode metadata");
+    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::SeasonPack);
+    assert_eq!(episode.season_numbers, vec![1]);
+    assert!(episode.full_season);
+    assert!(
+        episode.episode_numbers.is_empty(),
+        "no episode number appears in the name"
+    );
+    assert_eq!(best.projected.languages_audio, vec!["ita"]);
+    assert!(
+        !best
+            .reasons
+            .iter()
+            .any(|reason| reason.code == "identity:inferred_from_context"),
+        "the winner's identity is explicit"
+    );
+    // The inferred reading still exists — penalized and recorded, available
+    // when nothing explicit parses.
+    assert!(
+        analysis.candidates.iter().any(|candidate| candidate
+            .reasons
+            .iter()
+            .any(|reason| reason.code == "identity:inferred_from_context")),
+        "context-inferred identity must be recorded as inferred"
+    );
+}
+
+/// Issue #170: an ambiguous parse keeps title/season/episode unresolved, but
+/// structure-independent facts — languages above all — are read from the
+/// tokens outside every contender's title zone, so a required-language rule
+/// does not reject a release whose language is plainly in the name.
+#[test]
+fn ambiguous_parse_still_extracts_structure_independent_metadata() {
+    let target = context(ContextFacetHint::Series, "Quiet Meridian");
+
+    let analysis = analyze_release_for_target(
+        "Quiet.Meridian.S01E05E06.iTALiAN.MULTi.1080p.WEB-DL-GRP",
+        &target,
+    );
+
+    assert!(
+        analysis.is_ambiguous,
+        "fixture must stay a genuinely ambiguous parse"
+    );
+    let best = analysis.best_candidate().expect("best candidate");
+    assert_eq!(best.projected.languages_audio, vec!["ita"]);
+    assert!(
+        best.projected
+            .parse_hints
+            .iter()
+            .any(|hint| hint == "enrichment:ambiguous_structure_independent")
     );
 }

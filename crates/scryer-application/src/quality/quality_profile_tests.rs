@@ -2186,3 +2186,24 @@ fn quality_meets_or_exceeds_cutoff_rejects_unrecognized_current_tier() {
     );
     assert!(!reached);
 }
+
+/// Issue #170: a bare `Sxx` trailed by unmistakable release metadata is a
+/// title boundary in the neutral (context-free) parse. Without this, the
+/// neutral title read "Quiet Meridian S01 iTALiAN" and the candidate failed
+/// title matching before its real title was ever compared.
+#[test]
+fn bare_season_before_release_metadata_bounds_the_neutral_title() {
+    let parsed = parse_release_metadata(
+        "Quiet.Meridian.S01.iTALiAN.MULTi.1080p.DSNP.WEB-DL.DDP5.1.H.264-GRP",
+    );
+    assert_eq!(parsed.normalized_title, "QUIET MERIDIAN");
+
+    // An isolated `Sxx` with no metadata trailer keeps the strict rule: a
+    // title token that merely looks like a season must not truncate the title.
+    let isolated = parse_release_metadata("Quiet.Meridian.S01");
+    assert!(
+        isolated.normalized_title.starts_with("QUIET MERIDIAN"),
+        "unexpected title: {}",
+        isolated.normalized_title
+    );
+}

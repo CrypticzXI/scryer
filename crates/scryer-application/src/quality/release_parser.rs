@@ -467,6 +467,39 @@ fn looks_like_season_pack_marker(token: &str, tokens: &[String]) -> bool {
                 .collect::<String>()
                 .eq_ignore_ascii_case("COMPLETE")
         })
+        || bare_season_followed_by_release_metadata(token, tokens)
+}
+
+/// A bare `Sxx` trailed within a short window by unmistakable release metadata
+/// (`MULTI`, a resolution, a source, a codec, a year) is a season-pack marker
+/// and therefore a title boundary — `Just.Beyond.S01.iTALiAN.MULTi.1080p...`
+/// must not read its neutral title as "Just Beyond S01 iTALiAN" (issue #170).
+/// An isolated `Sxx` with no such trailer keeps the stricter companion-keyword
+/// requirement: a title's own token that merely looks like a season must not
+/// truncate the title.
+fn bare_season_followed_by_release_metadata(token: &str, tokens: &[String]) -> bool {
+    const METADATA_WINDOW: usize = 3;
+    let target = normalize_alphanumeric_upper(token);
+    tokens.iter().enumerate().any(|(index, candidate)| {
+        normalize_alphanumeric_upper(candidate) == target
+            && tokens
+                .iter()
+                .skip(index + 1)
+                .take(METADATA_WINDOW)
+                .any(|next| {
+                    let normalized = normalize_alphanumeric_upper(next);
+                    looks_like_release_provenance_normalized(&normalized)
+                        || parse_context_year(&normalized).is_some()
+                })
+    })
+}
+
+fn normalize_alphanumeric_upper(token: &str) -> String {
+    token
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase()
 }
 
 fn looks_like_bare_season_token(token: &str) -> bool {
