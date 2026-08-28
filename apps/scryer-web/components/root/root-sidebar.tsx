@@ -477,7 +477,7 @@ function navBadgeToneClass(tone: NavBadgeTone) {
     case "danger":
       return "bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]";
     case "warning":
-      return "bg-[var(--scry-warning-solid)] text-[var(--scry-warning-on-solid)]";
+      return "bg-[var(--scry-warning-solid)] text-[var(--scry-warning-on-solid)] peer-hover/menu-button:text-[var(--scry-warning-on-solid)] peer-data-[active=true]/menu-button:text-[var(--scry-warning-on-solid)]";
     case "request":
       return "bg-primary text-primary-foreground";
     case "cta":

@@ -233,7 +233,10 @@ function RefFieldTable({ section }: { section: RefSectionDef }) {
   return (
     <div>
       <h4 className="mb-1 font-semibold">
-        <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+        <code
+          data-code-font
+          className="rounded bg-muted px-1.5 py-0.5 text-xs"
+        >
           {section.path}
         </code>{" "}
         <span className="text-muted-foreground font-normal">
@@ -257,12 +260,15 @@ function RefFieldTable({ section }: { section: RefSectionDef }) {
             {section.fields.map((f) => (
               <TableRow key={f.field} data-ui="settings-table-row">
                 <TableCell>
-                  <code className="text-xs">
+                  <code data-code-font className="text-xs">
                     {section.path}.{f.field}
                   </code>
                 </TableCell>
                 <TableCell>
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
+                  <code
+                    data-code-font
+                    className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+                  >
                     {f.type}
                   </code>
                 </TableCell>
@@ -277,6 +283,34 @@ function RefFieldTable({ section }: { section: RefSectionDef }) {
     </div>
   );
 }
+
+const RULE_OUTPUT_EXAMPLE = `package scryer.rules.user.<rule_id>
+import rego.v1
+
+# Return a map of score codes to point deltas.
+# Positive values boost the release, negative values penalize it.
+# Use scryer.block_score() to hard-block a release.
+
+score_entry["dual_audio_bonus"] := 500 if {
+    input.release.is_dual_audio
+}
+
+score_entry["too_old"] := scryer.block_score() if {
+    input.release.age_days > 365
+}
+
+score_entry["too_few_chapters"] := scryer.block_score() if {
+    input.file != null
+    input.file.num_chapters < 2
+}
+
+score_entry["japanese_audio_bonus"] := 300 if {
+    input.file != null
+    some lang in input.file.audio_languages
+    scryer.lang_matches(lang, "ja")
+}`;
+
+const ignoreRulesReferenceCodeChange = (_value: string) => undefined;
 
 function RulesContextReference() {
   const t = useTranslate();
@@ -348,10 +382,15 @@ function RulesContextReference() {
                 <TableBody>
                   <TableRow data-ui="settings-table-row">
                     <TableCell>
-                      <code className="text-xs">scryer.block_score()</code>
+                      <code data-code-font className="text-xs">
+                        scryer.block_score()
+                      </code>
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
+                      <code
+                        data-code-font
+                        className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+                      >
                         number
                       </code>
                     </TableCell>
@@ -361,10 +400,15 @@ function RulesContextReference() {
                   </TableRow>
                   <TableRow data-ui="settings-table-row">
                     <TableCell>
-                      <code className="text-xs">scryer.size_gib(bytes)</code>
+                      <code data-code-font className="text-xs">
+                        scryer.size_gib(bytes)
+                      </code>
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
+                      <code
+                        data-code-font
+                        className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+                      >
                         float
                       </code>
                     </TableCell>
@@ -374,12 +418,15 @@ function RulesContextReference() {
                   </TableRow>
                   <TableRow data-ui="settings-table-row">
                     <TableCell>
-                      <code className="text-xs">
+                      <code data-code-font className="text-xs">
                         scryer.lang_matches(code, pattern)
                       </code>
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
+                      <code
+                        data-code-font
+                        className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+                      >
                         bool
                       </code>
                     </TableCell>
@@ -389,12 +436,15 @@ function RulesContextReference() {
                   </TableRow>
                   <TableRow data-ui="settings-table-row">
                     <TableCell>
-                      <code className="text-xs">
+                      <code data-code-font className="text-xs">
                         scryer.normalize_source(raw)
                       </code>
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
+                      <code
+                        data-code-font
+                        className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+                      >
                         string
                       </code>
                     </TableCell>
@@ -404,12 +454,15 @@ function RulesContextReference() {
                   </TableRow>
                   <TableRow data-ui="settings-table-row">
                     <TableCell>
-                      <code className="text-xs">
+                      <code data-code-font className="text-xs">
                         scryer.normalize_codec(raw)
                       </code>
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
+                      <code
+                        data-code-font
+                        className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+                      >
                         string
                       </code>
                     </TableCell>
@@ -429,33 +482,14 @@ function RulesContextReference() {
             <p className="mb-2 text-muted-foreground">
               {t("settings.refOutputIntro")}
             </p>
-            <pre className="rounded border border-border bg-muted/50 p-3 text-xs leading-relaxed">
-              {`package scryer.rules.user.<rule_id>
-import rego.v1
-
-# Return a map of score codes to point deltas.
-# Positive values boost the release, negative values penalize it.
-# Use scryer.block_score() to hard-block a release.
-
-score_entry["dual_audio_bonus"] := 500 if {
-    input.release.is_dual_audio
-}
-
-score_entry["too_old"] := scryer.block_score() if {
-    input.release.age_days > 365
-}
-
-score_entry["too_few_chapters"] := scryer.block_score() if {
-    input.file != null
-    input.file.num_chapters < 2
-}
-
-score_entry["japanese_audio_bonus"] := 300 if {
-    input.file != null
-    some lang in input.file.audio_languages
-    scryer.lang_matches(lang, "ja")
-}`}
-            </pre>
+            <LazyRegoEditor
+              id="settings-rules-output-format-example"
+              value={RULE_OUTPUT_EXAMPLE}
+              onChange={ignoreRulesReferenceCodeChange}
+              readOnly
+              minLines={25}
+              maxLines={25}
+            />
           </div>
         </CardContent>
       ) : null}
