@@ -109,8 +109,13 @@ impl AppUseCase {
             None
         };
 
+        // The probe deliberately runs under a synthetic id: it must exercise the
+        // submitted configuration, not whatever is stored. Nothing may persist
+        // against that id — `indexer_error_history_is_persistable` is what the
+        // capture paths ask before writing error history, so a failed probe
+        // reports its own error instead of a foreign-key failure behind it.
         let temp_config = IndexerConfig {
-            id: "test-connection".to_string(),
+            id: crate::CONNECTION_TEST_INDEXER_ID.to_string(),
             name: "Test Connection".to_string(),
             provider_type: provider_type.to_string(),
             base_url,
@@ -2646,6 +2651,62 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "repository: indexer connection test failed: repository: forced failure"
+        );
+    }
+
+    /// The probe runs under a synthetic indexer id with no `indexers` row, so
+    /// error history can never be written for it. The capture paths ask
+    /// `indexer_error_history_is_persistable` before writing, which is what
+    /// keeps a foreign-key failure from standing in for the probe's own error.
+    #[tokio::test]
+    async fn a_failing_connection_test_reports_the_probe_error_not_a_storage_error() {
+        assert!(
+            !crate::indexer_error_history_is_persistable(crate::CONNECTION_TEST_INDEXER_ID),
+            "the connection-test id must be excluded from error history"
+        );
+        assert!(
+            crate::indexer_error_history_is_persistable("indexer-1"),
+            "a stored indexer id still records history"
+        );
+
+        let client = Arc::new(RecordingIndexerClient::with_search_error(Some(
+            "plugin scryer_indexer_search() failed: connection refused".to_string(),
+        )));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "newznab",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            searchable_capabilities(),
+            client,
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .test_indexer_connection(
+                &test_admin(),
+                "newznab",
+                Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("connection refused"),
+            "the probe's own error must survive: {error}"
+        );
+        assert!(
+            !error.to_ascii_lowercase().contains("foreign key"),
+            "a storage failure must never replace the probe error: {error}"
         );
     }
 
