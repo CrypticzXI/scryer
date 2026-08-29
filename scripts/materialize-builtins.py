@@ -275,18 +275,30 @@ def main() -> int:
     scryer_version = current_scryer_version(repo_root)
     sdk_version = current_sdk_version(repo_root)
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("schemaVersion") != 1 or not isinstance(manifest.get("plugins"), dict):
-        fail(f"invalid built-in version manifest: {manifest_path}")
-    selected = manifest["plugins"]
-    if set(selected) != set(BUILTINS):
+    if manifest.get("schemaVersion") != 2 or not isinstance(manifest.get("plugins"), dict):
+        fail(
+            f"invalid built-in version manifest: {manifest_path} "
+            "(schemaVersion 2 pins version and wasm_blake3; run `cargo xtask builtins sync`)"
+        )
+    pins = manifest["plugins"]
+    if set(pins) != set(BUILTINS):
         fail("built-in version manifest must select exactly the supported built-ins")
-    if any(not isinstance(version, str) for version in selected.values()):
-        fail("built-in version manifest values must be semantic-version strings")
-    for plugin_id, version in selected.items():
+    for plugin_id, pin in pins.items():
+        if not isinstance(pin, dict) or not isinstance(pin.get("version"), str):
+            fail(f"built-in pin for {plugin_id} must be an object with a version string")
         try:
-            parse_version(version)
+            parse_version(pin["version"])
         except RuntimeError as error:
             fail(f"invalid selected version for {plugin_id}: {error}")
+        digest = pin.get("wasm_blake3")
+        if not isinstance(digest, str) or len(digest) != 64 or any(
+            ch not in "0123456789abcdef" for ch in digest
+        ):
+            fail(
+                f"built-in pin for {plugin_id} must carry wasm_blake3 as 64 lowercase hex "
+                "characters (run `cargo xtask builtins sync` to refresh it)"
+            )
+    selected = {plugin_id: pin["version"] for plugin_id, pin in pins.items()}
 
     output_dir.mkdir(parents=True, exist_ok=True)
     bundle_dir = output_dir / "provenance"
@@ -369,6 +381,19 @@ def main() -> int:
             wasm_path = temp_dir / f"{stem}.wasm"
             wasm = zstd_decode(compressed, wasm_path)
             wasm_digest = assert_blake3(f"{plugin_id} WASM artifact", wasm_path, artifact.get("wasm_digests") or [])
+            # The signature chain proves who built these bytes; the repo pin
+            # proves they are the bytes that were reviewed. A catalog that
+            # re-points the pinned version at new content fails here instead of
+            # materializing silently — the only way past is a reviewed
+            # builtin-versions.json bump via `cargo xtask builtins sync`.
+            pinned_wasm = pins[plugin_id]["wasm_blake3"]
+            if wasm_digest.lower() != pinned_wasm:
+                fail(
+                    f"{plugin_id} {wanted_version} WASM digest does not match the pinned "
+                    f"wasm_blake3 in builtin-versions.json (pinned {pinned_wasm}, "
+                    f"catalog {wasm_digest}); if this change is intended, refresh the pin "
+                    "with `cargo xtask builtins sync`"
+                )
             descriptor = embedded_descriptor(wasm)
             if descriptor.get("id") != plugin_id or str(descriptor.get("version")) != wanted_version:
                 fail(f"{plugin_id} descriptor does not match the requested catalog release")

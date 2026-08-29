@@ -188,11 +188,39 @@ struct BuiltinPluginSpec {
     artifact_stem: &'static str,
 }
 
+/// One built-in's pin: the version *and* the content.
+///
+/// The digest is TOFU'd from the signed catalog at sync time and asserted on
+/// every materialization thereafter (here and in
+/// `scripts/materialize-builtins.py`). The signature chain proves who built
+/// the bytes; this proves they are the bytes the repo reviewed — a catalog
+/// that re-points the same version at new artifacts fails the build instead
+/// of materializing silently. `cargo xtask builtins sync` refreshes both
+/// fields together, so a bump is always a visible diff.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct BuiltinVersionPin {
+    version: String,
+    /// Bare lowercase blake3 hex of the decompressed WASM artifact.
+    wasm_blake3: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct BuiltinVersionManifest {
     #[serde(rename = "schemaVersion")]
     schema_version: u32,
-    plugins: BTreeMap<String, String>,
+    plugins: BTreeMap<String, BuiltinVersionPin>,
+}
+
+/// Digest equality across the two spellings in play: the catalog and
+/// `sync_builtin_plugin` carry `blake3:<hex>`, the manifest pins bare hex.
+fn builtin_wasm_digest_matches(pinned: &str, actual: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .trim()
+            .trim_start_matches("blake3:")
+            .to_ascii_lowercase()
+    };
+    normalize(pinned) == normalize(actual)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1832,8 +1860,11 @@ fn load_builtin_version_manifest(ctx: &TaskContext) -> Result<BuiltinVersionMani
 }
 
 fn validate_builtin_version_manifest(manifest: &BuiltinVersionManifest) -> Result<()> {
-    if manifest.schema_version != 1 {
-        bail!("unsupported schemaVersion {}", manifest.schema_version);
+    if manifest.schema_version != 2 {
+        bail!(
+            "unsupported schemaVersion {} (2 pins version and wasm_blake3; run `cargo xtask builtins sync`)",
+            manifest.schema_version
+        );
     }
     let expected = BUILTIN_PLUGINS
         .iter()
@@ -1847,22 +1878,33 @@ fn validate_builtin_version_manifest(manifest: &BuiltinVersionManifest) -> Resul
     if actual != expected {
         bail!("must select exactly the supported built-in plugins");
     }
-    for (plugin_id, version) in &manifest.plugins {
-        Version::parse(version.trim_start_matches('v'))
-            .with_context(|| format!("has invalid version {version} for {plugin_id}"))?;
+    for (plugin_id, pin) in &manifest.plugins {
+        Version::parse(pin.version.trim_start_matches('v')).with_context(|| {
+            format!("has invalid version {} for {plugin_id}", pin.version)
+        })?;
+        if pin.wasm_blake3.len() != 64
+            || !pin
+                .wasm_blake3
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+        {
+            bail!(
+                "has invalid wasm_blake3 for {plugin_id}: expected 64 lowercase hex characters"
+            );
+        }
     }
     Ok(())
 }
 
 fn write_builtin_version_manifest(
     ctx: &TaskContext,
-    plugins: BTreeMap<String, String>,
+    plugins: BTreeMap<String, BuiltinVersionPin>,
 ) -> Result<()> {
     let path = builtin_version_manifest_path(ctx);
     fs::write(
         &path,
         canonical_pretty_json(&BuiltinVersionManifest {
-            schema_version: 1,
+            schema_version: 2,
             plugins,
         })?,
     )
@@ -3053,23 +3095,45 @@ fn refresh_builtin_plugins(
     let mut catalog_wasm_blake3 = BTreeMap::new();
     let mut selected_versions = BTreeMap::new();
     for spec in BUILTIN_PLUGINS {
-        let pinned_version = pinned_versions
+        let pin = pinned_versions
             .map(|manifest| {
-                manifest
-                    .plugins
-                    .get(spec.plugin_id)
-                    .map(String::as_str)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "built-in manifest is missing version for {}",
-                            spec.plugin_id
-                        )
-                    })
+                manifest.plugins.get(spec.plugin_id).ok_or_else(|| {
+                    anyhow!(
+                        "built-in manifest is missing version for {}",
+                        spec.plugin_id
+                    )
+                })
             })
             .transpose()?;
-        let (version, wasm_digest) = sync_builtin_plugin(ctx, spec, scryer_version, pinned_version)
-            .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
-        selected_versions.insert(spec.plugin_id.to_string(), version);
+        let (version, wasm_digest) =
+            sync_builtin_plugin(ctx, spec, scryer_version, pin.map(|pin| pin.version.as_str()))
+                .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
+        // The version pin names a release; the digest pin names its bytes. A
+        // catalog that re-points the pinned version at different content is a
+        // hard failure, never a silent re-materialization — the only way past
+        // it is a reviewed manifest bump via `cargo xtask builtins sync`.
+        if let Some(pin) = pin
+            && !builtin_wasm_digest_matches(&pin.wasm_blake3, &wasm_digest)
+        {
+            bail!(
+                "builtin {} {} WASM digest does not match the pinned wasm_blake3 in \
+                 builtin-versions.json (pinned {}, catalog {}); if this change is intended, \
+                 refresh the pin with `cargo xtask builtins sync`",
+                spec.plugin_id,
+                version,
+                pin.wasm_blake3,
+                wasm_digest
+            );
+        }
+        selected_versions.insert(
+            spec.plugin_id.to_string(),
+            BuiltinVersionPin {
+                version,
+                wasm_blake3: wasm_digest
+                    .trim_start_matches("blake3:")
+                    .to_ascii_lowercase(),
+            },
+        );
         catalog_wasm_blake3.insert(spec.plugin_id.to_string(), wasm_digest);
     }
     remove_stale_builtin_assets(ctx)?;
@@ -4546,20 +4610,44 @@ mod tests {
 
     #[test]
     fn builtin_version_manifest_requires_exact_builtin_set() {
+        let pin = |digest: char| BuiltinVersionPin {
+            version: "2.0.1".to_string(),
+            wasm_blake3: std::iter::repeat_n(digest, 64).collect(),
+        };
         let valid = BuiltinVersionManifest {
-            schema_version: 1,
+            schema_version: 2,
             plugins: BTreeMap::from([
-                ("newznab".to_string(), "2.0.1".to_string()),
-                ("torznab".to_string(), "2.0.1".to_string()),
+                ("newznab".to_string(), pin('a')),
+                ("torznab".to_string(), pin('b')),
             ]),
         };
         assert!(validate_builtin_version_manifest(&valid).is_ok());
 
         let incomplete = BuiltinVersionManifest {
-            schema_version: 1,
-            plugins: BTreeMap::from([("newznab".to_string(), "2.0.1".to_string())]),
+            schema_version: 2,
+            plugins: BTreeMap::from([("newznab".to_string(), pin('a'))]),
         };
         assert!(validate_builtin_version_manifest(&incomplete).is_err());
+
+        let mut bad_digest = valid.clone();
+        bad_digest
+            .plugins
+            .get_mut("newznab")
+            .expect("newznab pin")
+            .wasm_blake3 = "not-hex".to_string();
+        assert!(validate_builtin_version_manifest(&bad_digest).is_err());
+    }
+
+    #[test]
+    fn builtin_wasm_digest_comparison_tolerates_the_prefix_spelling() {
+        assert!(builtin_wasm_digest_matches(
+            "b9a72d60fb1ea0a933e5c5b3caee581133e562394fc705c75c8e58c5124b9c67",
+            "blake3:B9A72D60FB1EA0A933E5C5B3CAEE581133E562394FC705C75C8E58C5124B9C67",
+        ));
+        assert!(!builtin_wasm_digest_matches(
+            "b9a72d60fb1ea0a933e5c5b3caee581133e562394fc705c75c8e58c5124b9c67",
+            "blake3:d8cb9d017659a50241b9831164662851b4393718c0f1524b2059f48f909d54c4",
+        ));
     }
 
     #[test]

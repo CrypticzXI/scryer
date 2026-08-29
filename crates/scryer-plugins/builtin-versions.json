@@ -1,7 +1,13 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "plugins": {
-    "newznab": "2.0.1",
-    "torznab": "2.0.1"
+    "newznab": {
+      "version": "2.0.1",
+      "wasm_blake3": "b9a72d60fb1ea0a933e5c5b3caee581133e562394fc705c75c8e58c5124b9c67"
+    },
+    "torznab": {
+      "version": "2.0.1",
+      "wasm_blake3": "d8cb9d017659a50241b9831164662851b4393718c0f1524b2059f48f909d54c4"
+    }
   }
 }
