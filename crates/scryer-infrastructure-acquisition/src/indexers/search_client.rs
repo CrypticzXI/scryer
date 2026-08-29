@@ -50,6 +50,10 @@ struct SearchStrategy {
     episode: Option<u32>,
     absolute_episode: Option<u32>,
     generic_query_only: bool,
+    /// Ask the provider's generic function instead of the facet-scoped one,
+    /// while keeping the routed categories. Narrower than `generic_query_only`,
+    /// which also strips the categories and the structured context.
+    omit_request_facet: bool,
     label: String,
 }
 
@@ -259,7 +263,8 @@ fn prepare_search_strategies(
         let category = (!strategy.generic_query_only)
             .then(|| context.category.clone())
             .flatten();
-        let facet = (!strategy.generic_query_only).then(|| strategy.request_facet.clone());
+        let facet = (!strategy.generic_query_only && !strategy.omit_request_facet)
+            .then(|| strategy.request_facet.clone());
         let newznab_categories = (!strategy.generic_query_only)
             .then(|| context.per_indexer_categories.clone())
             .flatten();
@@ -1891,6 +1896,21 @@ impl IndexerBackoffTracker {
 /// awaiting the same indexer's feed will share a single HTTP fetch.
 type RssFeedCache = Arc<Mutex<HashMap<String, Arc<RssFeedCacheEntry>>>>;
 
+/// Indexer ids observed answering the facet-scoped RSS form with "function not
+/// available". They keep sweeping — the next cycle just asks the bare-query way.
+type RssBareQueryIndexers = Arc<Mutex<HashSet<String>>>;
+
+/// Which shape the RSS "latest releases" sweep takes for one indexer. Both
+/// forms participate in RSS; only the request differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RssRequestForm {
+    /// The facet-scoped nab function (`tvsearch`/`movie`), carrying the routed
+    /// categories.
+    Nab,
+    /// The bare "latest releases" query every newznab-shaped endpoint answers.
+    BareQuery,
+}
+
 struct RssFeedCacheEntry {
     cell: tokio::sync::OnceCell<Result<Vec<IndexerSearchResult>, String>>,
     initialization_lock: Arc<Mutex<()>>,
@@ -1923,6 +1943,7 @@ pub struct MultiIndexerSearchClient {
     rate_limiter: IndexerRateLimiter,
     backoff_tracker: IndexerBackoffTracker,
     rss_feed_cache: RssFeedCache,
+    rss_bare_query_indexers: RssBareQueryIndexers,
     background_search_limit: Arc<Semaphore>,
     interactive_search_limit: Arc<Semaphore>,
 }
@@ -1950,6 +1971,7 @@ impl MultiIndexerSearchClient {
             rate_limiter: IndexerRateLimiter::new(),
             backoff_tracker: IndexerBackoffTracker::new(),
             rss_feed_cache: Arc::new(Mutex::new(HashMap::new())),
+            rss_bare_query_indexers: Arc::new(Mutex::new(HashSet::new())),
             background_search_limit: Arc::new(Semaphore::new(
                 BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
             )),
@@ -4142,7 +4164,20 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }));
                 }
             }
+            let mut rss_form = None;
             if is_rss_request && strategies.is_empty() {
+                let function_unavailable_observed = self
+                    .rss_bare_query_indexers
+                    .lock()
+                    .await
+                    .contains(&config.id);
+                let form = rss_request_form(
+                    &caps,
+                    resolved_caps.text_dispatch_mode,
+                    &facet,
+                    function_unavailable_observed,
+                );
+                rss_form = Some(form);
                 strategies.push(SearchStrategy {
                     request_query: String::new(),
                     request_facet: facet.clone(),
@@ -4151,6 +4186,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     episode: None,
                     absolute_episode: None,
                     generic_query_only: false,
+                    omit_request_facet: form == RssRequestForm::BareQuery,
                     label: "rss".into(),
                 });
             }
@@ -4245,6 +4281,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             let backoff_tracker = self.backoff_tracker.clone();
             let indexer_configs = self.indexer_configs.clone();
             let indexer_errors = self.indexer_errors.clone();
+            let rss_bare_query_indexers = self.rss_bare_query_indexers.clone();
             let client = client.clone();
             let primary_strategies = primary_strategies.clone();
             let fallback_strategies = fallback_strategies.clone();
@@ -4541,6 +4578,21 @@ impl IndexerClient for MultiIndexerSearchClient {
                             primary_had_error = true;
                             all_strategies_complete = false;
                             only_unattested_incompleteness = false;
+                            // The endpoint does not implement the facet-scoped
+                            // function it was asked for. That is a wrong request
+                            // form, not a broken indexer, so it is remembered
+                            // rather than held against the indexer's health: the
+                            // next sweep asks the bare-query way, and only that
+                            // form's failures are health events.
+                            let wrong_rss_request_form = rss_form
+                                == Some(RssRequestForm::Nab)
+                                && newznab_function_is_unavailable(&err);
+                            if wrong_rss_request_form {
+                                rss_bare_query_indexers
+                                    .lock()
+                                    .await
+                                    .insert(indexer_id.clone());
+                            }
                             if let Some(diagnostics) = search_diagnostics.as_ref() {
                                 diagnostics
                                     .record_error(
@@ -4551,15 +4603,17 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     )
                                     .await;
                             }
-                            batch_health.mark_error(
-                                &err,
-                                outcome.retry_after,
-                                outcome.rate_limited,
-                            );
-                            if scryer_application::challenge_solver::is_solver_service_error_message(
-                                &err.to_string(),
-                            ) {
-                                batch_health.mark_solver_failure();
+                            if !wrong_rss_request_form {
+                                batch_health.mark_error(
+                                    &err,
+                                    outcome.retry_after,
+                                    outcome.rate_limited,
+                                );
+                                if scryer_application::challenge_solver::is_solver_service_error_message(
+                                    &err.to_string(),
+                                ) {
+                                    batch_health.mark_solver_failure();
+                                }
                             }
                             debug!(
                                 indexer = indexer_name.as_str(),
@@ -5284,6 +5338,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
                     episode: None,
                     absolute_episode: Some(absolute_episode),
                     generic_query_only: false,
+                    omit_request_facet: false,
                     label: "ids_abs".into(),
                 });
             }
@@ -5297,6 +5352,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
                     episode: structured_episode,
                     absolute_episode: None,
                     generic_query_only: false,
+                    omit_request_facet: false,
                     label: "ids_sxex".into(),
                 });
             }
@@ -5311,6 +5367,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
                 episode: structured_episode,
                 absolute_episode: structured_absolute_episode,
                 generic_query_only: false,
+                omit_request_facet: false,
                 label: "ids".into(),
             });
         }
@@ -5330,6 +5387,7 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             episode: text_episode,
             absolute_episode: text_absolute_episode,
             generic_query_only,
+            omit_request_facet: false,
             label: if is_alias_query {
                 "freetext_alias".into()
             } else {
@@ -5352,11 +5410,48 @@ fn build_strategies(p: &StrategyParams<'_>) -> Vec<SearchStrategy> {
             episode: text_episode,
             absolute_episode: text_absolute_episode,
             generic_query_only,
+            omit_request_facet: false,
             label: "fallback".into(),
         });
     }
 
     strategies
+}
+
+/// Whether a failed strategy says the endpoint does not implement the newznab
+/// function that was asked for.
+fn newznab_function_is_unavailable(error: &AppError) -> bool {
+    matches!(
+        scryer_application::classify_newznab_error_message(&error.to_string())
+            .map(|classified| classified.classification),
+        Some(
+            IndexerErrorClassification::NewznabFunctionNotAvailable
+                | IndexerErrorClassification::NewznabNoSuchFunction
+        )
+    )
+}
+
+/// Pick the request form for one indexer's RSS sweep. The facet-scoped nab
+/// function is used only where the caps advertise it and the endpoint has not
+/// already answered "function not available"; everything else asks the bare
+/// "latest releases" query, which is a request-form choice and never a reason
+/// to drop the indexer from the sweep.
+fn rss_request_form(
+    caps: &IndexerProviderCapabilities,
+    text_dispatch_mode: TextDispatchMode,
+    facet: &str,
+    function_unavailable_observed: bool,
+) -> RssRequestForm {
+    if function_unavailable_observed {
+        return RssRequestForm::BareQuery;
+    }
+    if matches!(text_dispatch_mode, TextDispatchMode::FacetScoped)
+        && caps.supports_query_for_facet(facet)
+    {
+        RssRequestForm::Nab
+    } else {
+        RssRequestForm::BareQuery
+    }
 }
 
 fn stored_caps_snapshot(config: &IndexerConfig) -> Option<IndexerCapsSnapshot> {
@@ -5916,6 +6011,7 @@ mod tests {
             episode: None,
             absolute_episode: None,
             generic_query_only: false,
+            omit_request_facet: false,
             label: "ids_tmdb".to_string(),
         };
         let text_strategy = SearchStrategy {
@@ -5926,6 +6022,7 @@ mod tests {
             episode: None,
             absolute_episode: None,
             generic_query_only: false,
+            omit_request_facet: false,
             label: "freetext".to_string(),
         };
 
@@ -8615,6 +8712,152 @@ mod tests {
         assert_eq!(recorded[0].absolute_episode, None);
     }
 
+    #[test]
+    fn the_rss_form_uses_the_nab_function_only_where_the_caps_advertise_it() {
+        let facet_capable = IndexerProviderCapabilities {
+            rss: true,
+            query_param: Some("q".to_string()),
+            supported_query_facets: vec!["series".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            rss_request_form(
+                &facet_capable,
+                TextDispatchMode::FacetScoped,
+                "series",
+                false
+            ),
+            RssRequestForm::Nab
+        );
+        // An observed function-unavailable answer outranks the advertised caps.
+        assert_eq!(
+            rss_request_form(
+                &facet_capable,
+                TextDispatchMode::FacetScoped,
+                "series",
+                true
+            ),
+            RssRequestForm::BareQuery
+        );
+
+        let generic_only = IndexerProviderCapabilities {
+            rss: true,
+            query_param: Some("q".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            rss_request_form(
+                &generic_only,
+                TextDispatchMode::GenericOnly,
+                "series",
+                false
+            ),
+            RssRequestForm::BareQuery
+        );
+        assert_eq!(
+            rss_request_form(
+                &IndexerProviderCapabilities {
+                    rss: true,
+                    ..Default::default()
+                },
+                TextDispatchMode::None,
+                "series",
+                false
+            ),
+            RssRequestForm::BareQuery
+        );
+    }
+
+    #[test]
+    fn a_function_unavailable_answer_is_read_as_a_wrong_request_form() {
+        assert!(newznab_function_is_unavailable(&AppError::Repository(
+            "Newznab API error 203: Function not available".to_string()
+        )));
+        assert!(newznab_function_is_unavailable(&AppError::Repository(
+            "Newznab API error 202: No such function".to_string()
+        )));
+        assert!(!newznab_function_is_unavailable(&AppError::Repository(
+            "upstream status 503".to_string()
+        )));
+    }
+
+    /// The sweep is a "latest releases" question, so an endpoint that does not
+    /// implement the facet-scoped function must be asked the bare-query way
+    /// rather than dropped from RSS.
+    #[tokio::test]
+    async fn an_rss_sweep_falls_back_to_the_bare_query_form_after_a_function_unavailable_answer() {
+        let mut config = mock_indexer_config();
+        config.provider_type = "newznab".into();
+        config.managed_parent_config_id = Some("parent".into());
+        config.managed_metadata_json = Some(managed_metadata_with_caps(Some(
+            prowlarr_caps_snapshot(&["q", "imdbid"], &["q", "season", "ep", "tvdbid"]),
+        )));
+
+        let calls = StdArc::new(StdMutex::new(Vec::new()));
+        let client = Arc::new(ScriptedIndexerClient {
+            calls: calls.clone(),
+            responder: StdArc::new(|call| {
+                if call.facet.is_some() {
+                    Err(AppError::Repository(
+                        "Newznab API error 203: Function not available".to_string(),
+                    ))
+                } else {
+                    response_with_titles(&["Quiet.Meridian.S13E01.1080p.WEB-DL"])
+                }
+            }),
+        });
+        let multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![config],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(ScriptedIndexerPluginProvider {
+                client,
+                caps: IndexerProviderCapabilities {
+                    rss: true,
+                    supported_ids: HashMap::from([("series".into(), vec!["tvdb_id".into()])]),
+                    season_param: Some("season".into()),
+                    episode_param: Some("ep".into()),
+                    query_param: Some("q".into()),
+                    search: true,
+                    tvdb_search: true,
+                    ..Default::default()
+                },
+            }),
+        );
+
+        let rss_sweep = || {
+            multi.search(
+                String::new(),
+                HashMap::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+        };
+
+        let _refused = rss_sweep().await;
+        let _accepted = rss_sweep().await.expect("bare-query sweep should answer");
+
+        let recorded = calls.lock().expect("calls").clone();
+        assert_eq!(recorded.len(), 2, "{recorded:?}");
+        assert_eq!(recorded[0].facet.as_deref(), Some("series"), "{recorded:?}");
+        assert_eq!(recorded[1].facet, None, "{recorded:?}");
+        // Only the facet-scoped function is given up; the sweep keeps sweeping
+        // the categories it was routed.
+        assert_eq!(
+            recorded[1].categories, recorded[0].categories,
+            "{recorded:?}"
+        );
+    }
+
     #[tokio::test]
     async fn live_caps_basic_query_fallback_strips_facet_params_when_tvsearch_lacks_q() {
         let mut config = mock_indexer_config();
@@ -10008,6 +10251,7 @@ mod tests {
             episode: Some(5),
             absolute_episode: if label == "ids_abs" { Some(33) } else { None },
             generic_query_only: false,
+            omit_request_facet: false,
             label: label.into(),
         }
     }
