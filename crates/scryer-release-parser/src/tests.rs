@@ -1320,7 +1320,10 @@ fn movie_ova_and_bare_complete_markers_are_not_series_packs() {
         ("Show Complete Original Series [BD 1080p]", "Show"),
         ("Show Complete Subbed Collection [BD 1080p]", "Show"),
         ("Show All Seasons [BD 1080p]", "Show"),
-        ("Quiet Meridian Season 01 to 09 [BD 1080p]", "Quiet Meridian"),
+        (
+            "Quiet Meridian Season 01 to 09 [BD 1080p]",
+            "Quiet Meridian",
+        ),
         ("Quietfall Complete [BD 1080p]", "Quietfall"),
         ("Show 01-24 [BD 1080p]", "Show"),
     ] {

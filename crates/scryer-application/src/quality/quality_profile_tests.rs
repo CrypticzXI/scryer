@@ -2213,12 +2213,9 @@ fn bare_season_before_release_metadata_bounds_the_neutral_title() {
 /// failed title matching before its real title was ever compared.
 #[test]
 fn a_spelled_season_number_bounds_the_neutral_title() {
-    for release in
-        ["[GroupTag] Quiet Meridian - Season 1 - The Arc Name [BD 1080p][HEVC x265 10bit]"]
-    {
-        let parsed = parse_release_metadata(release);
-        assert_eq!(parsed.normalized_title, "QUIET MERIDIAN", "{release}");
-    }
+    let release = "[GroupTag] Quiet Meridian - Season 1 - The Arc Name [BD 1080p][HEVC x265 10bit]";
+    let parsed = parse_release_metadata(release);
+    assert_eq!(parsed.normalized_title, "QUIET MERIDIAN", "{release}");
 }
 
 /// The numeric successor is what makes the word a marker; without one the title
