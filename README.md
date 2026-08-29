@@ -22,8 +22,8 @@
   <img src="docs/img/scryer-overview.webp" alt="Introducing Scryer" width="960" href="https://www.scryer.media/scryer/" target="_blank"/>
 </p>
 <p align="center">
-  <img href="https://www.reddit.com/r/scryer_media/" alt="Join us on Reddit!" src="docs/img/Scryer_Reddit.webp" width="47.3%" />
-  <img href="https://discord.gg/RAVvb2enhz" alt="Join us on Discord!" src="docs/img/Scryer_Discord.webp" width="47.3%" />
+  <a href="https://www.reddit.com/r/scryer_media/"><img alt="Join us on Reddit!" src="docs/img/Scryer_Reddit.webp" width="47.3%" /></a>
+  <a href="https://discord.gg/RAVvb2enhz"><img alt="Join us on Discord!" src="docs/img/Scryer_Discord.webp" width="47.3%" /></a>
 </p>
 
 
