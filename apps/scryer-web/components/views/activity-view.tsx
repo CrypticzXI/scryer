@@ -476,13 +476,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         void requestMoreItems();
       }
     },
-    [
-      activeTab,
-      queueLoading,
-      queueLoadingMore,
-      requestMoreItems,
-      visibleHasMore,
-    ],
+    [queueLoading, queueLoadingMore, requestMoreItems, visibleHasMore],
   );
 
   const emptyStateLabel =
