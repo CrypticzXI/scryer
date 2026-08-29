@@ -868,6 +868,12 @@ pub(crate) async fn qualify_manual_import_video_candidate(
             source_path.display()
         ))
     })?;
+    std::fs::File::open(&canonical_path).map_err(|error| {
+        AppError::Validation(format!(
+            "manual import file is not accessible: {} ({error})",
+            source_path.display()
+        ))
+    })?;
     let has_known_video_extension = is_video_file(source_path);
     let has_file_extension = source_path.extension().is_some();
     if metadata.len() == 0 {
@@ -927,10 +933,9 @@ pub(crate) async fn qualify_manual_import_video_candidate(
     };
 
     #[cfg(not(feature = "runtime-media-analysis"))]
-    let video_facts = {
-        return Ok(None);
-    };
+    return Ok(None);
 
+    #[cfg(feature = "runtime-media-analysis")]
     Ok(Some(QualifiedManualImportVideo {
         source_entry_path: source_path.to_path_buf(),
         canonical_path,
