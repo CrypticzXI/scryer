@@ -6293,6 +6293,48 @@ async fn create_absolute_pack_episode(
     episode
 }
 
+/// A catalogued episode in `season_number` that also carries a title-wide
+/// absolute number. `create_episode` has no absolute-number argument, so the
+/// row is written through the repository.
+async fn create_absolute_numbered_pack_episode(
+    app: &AppUseCase,
+    user: &User,
+    title_id: &str,
+    template: &Episode,
+    season_number: u32,
+    episode_number: u32,
+    absolute_number: u32,
+) -> Episode {
+    let collection = app
+        .create_collection(
+            user,
+            title_id.to_string(),
+            "season".into(),
+            season_number.to_string(),
+            Some(format!("Season {season_number}")),
+            None,
+            Some(episode_number.to_string()),
+            Some(episode_number.to_string()),
+        )
+        .await
+        .expect("create pack season collection");
+    let mut episode = template.clone();
+    episode.id = Id::new().0;
+    episode.collection_id = Some(collection.id);
+    episode.season_number = Some(season_number.to_string());
+    episode.episode_number = Some(episode_number.to_string());
+    episode.episode_label = Some(format!("S{season_number:02}E{episode_number:02}"));
+    episode.title = Some(format!("Season {season_number} Episode {episode_number}"));
+    episode.absolute_number = Some(absolute_number.to_string());
+    app.services
+        .catalog
+        .shows
+        .create_episode(episode.clone())
+        .await
+        .expect("create absolute-numbered pack episode");
+    episode
+}
+
 async fn create_pack_episode_in_season(
     app: &AppUseCase,
     user: &User,
@@ -7541,6 +7583,69 @@ async fn alternate_numbered_verified_pack_member_reconciles_from_typoed_episode_
     let artifacts = import_artifacts
         .artifacts_for_file("fail.closed.pack.s01e42.season.17.episod.42.1080p.web-dl.x264.mkv")
         .await;
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert_eq!(artifacts[0].result, "imported", "{artifacts:?}");
+    assert_eq!(
+        artifacts[0].episode_id.as_deref(),
+        Some(scoped_episode.id.as_str())
+    );
+    assert!(
+        library_video_file_names(library_dir.path())
+            .iter()
+            .any(|file_name| file_name.contains("S17E42")),
+        "catalog numbering must drive the destination"
+    );
+}
+
+/// A pack member named with a bare `E###` token parses as an inferred season 1
+/// that no catalog episode answers. The pack's declared season plus the
+/// catalog's absolute numbering are what identify it.
+#[tokio::test]
+async fn bare_episode_token_pack_member_imports_through_catalog_absolute_numbering() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let scoped_episode =
+        create_absolute_numbered_pack_episode(&app, &user, &title.id, &episode, 17, 42, 408).await;
+    let release_title = "Fail.Closed.Pack.S17.1080p.WEB-DL.x264";
+    let item_id = "bare-episode-token-pack-member";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_title,
+        SubmissionScope::Collection {
+            collection_id: scoped_episode
+                .collection_id
+                .clone()
+                .expect("season seventeen collection"),
+        },
+    )
+    .await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    write_pack_video(source_dir.path(), "E408.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_title, source_dir.path());
+
+    let result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("bare episode-token pack member should import")
+    };
+
+    assert_eq!(result.decision, scryer_domain::ImportDecision::Imported);
+    assert_eq!(result.episode_ids, vec![scoped_episode.id.clone()]);
+    let artifacts = import_artifacts.artifacts_for_file("e408.mkv").await;
     assert_eq!(artifacts.len(), 1, "{artifacts:?}");
     assert_eq!(artifacts[0].result, "imported", "{artifacts:?}");
     assert_eq!(
