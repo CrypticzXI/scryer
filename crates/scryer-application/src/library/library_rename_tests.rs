@@ -218,7 +218,7 @@ fn render_rename_template_optional_group_includes_present_guard() {
     ]);
     assert_eq!(
         render_rename_template(template, &numbered),
-        "Bleach - S01E01 (1) - A title that is deliberately longer than sixty-four characters to ve - 1080p.mkv"
+        "Bleach - S01E01 (1) - A title that is deliberately longer than sixty-four characters t - 1080p.mkv"
     );
 }
 
