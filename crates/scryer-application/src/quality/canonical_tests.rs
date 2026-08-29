@@ -1315,8 +1315,8 @@ fn a_landed_file_inside_the_overhead_band_is_scored_on_its_announced_size() {
     assert_eq!(size_basis_bytes(at_the_edge, Some(announced)), announced);
     assert_eq!(size_basis_bytes(announced - 1, Some(announced)), announced);
     assert_eq!(size_basis_bytes(announced, Some(announced)), announced);
-    // A payload that landed larger than announced is still the release the
-    // grab admitted; the grab's number stands.
+    // A modest excess is still packaging/measurement drift, so the grab's
+    // number stands inside the reciprocal band too.
     assert_eq!(
         size_basis_bytes(announced + GIB, Some(announced)),
         announced
@@ -1333,6 +1333,67 @@ fn a_real_shortfall_is_scored_on_what_landed() {
     );
     let short = (announced as f64 * 0.80) as i64;
     assert_eq!(size_basis_bytes(short, Some(announced)), short);
+}
+
+#[test]
+fn a_material_excess_is_scored_on_what_landed() {
+    let announced = 10 * GIB;
+    let materially_larger = 12 * GIB;
+    assert_eq!(
+        size_basis_bytes(materially_larger, Some(announced)),
+        materially_larger
+    );
+    assert_eq!(
+        persisted_announced_size_bytes(materially_larger, Some(announced)),
+        None,
+        "a discarded announcement must not become the incumbent's size basis"
+    );
+}
+
+#[test]
+fn a_landed_aggregate_does_not_keep_a_member_sized_announcement() {
+    let profile = series_profile();
+    let weights = balanced_weights();
+    let tags: Vec<String> = Vec::new();
+    let basis = CoverageSizeBasis::aggregate(Some(12 * 45), Some(45), 12);
+    let parsed = parse_release_metadata("Quiet.Meridian.S01.1080p.WEB-DL.H.264-GroupTag");
+    let announced = (2.5 * GIB as f64) as i64;
+    let landed = 30 * GIB;
+
+    let selected = size_basis_bytes(landed, Some(announced));
+    assert_eq!(selected, landed);
+    assert_eq!(
+        persisted_announced_size_bytes(landed, Some(announced)),
+        None
+    );
+
+    let landed_score = score_release(
+        &ReleaseEvidence::announced(parsed.clone(), Some(selected)),
+        &episode_ctx(&profile, &weights, &tags, basis),
+    );
+    assert!(
+        !landed_score
+            .announced_decision
+            .scoring_log
+            .iter()
+            .any(|entry| entry.code == SIZE_PACK_MEMBER_BASIS_CODE),
+        "known aggregate bytes were still read as one member: {:?}",
+        landed_score.announced_decision.scoring_log
+    );
+
+    let member_score = score_release(
+        &ReleaseEvidence::announced(parsed, Some(announced)),
+        &episode_ctx(&profile, &weights, &tags, basis),
+    );
+    assert!(
+        member_score
+            .announced_decision
+            .scoring_log
+            .iter()
+            .any(|entry| entry.code == SIZE_PACK_MEMBER_BASIS_CODE),
+        "fixture precondition: the announcement must look member-sized"
+    );
+    assert!(landed_score.total > member_score.total);
 }
 
 #[test]

@@ -792,19 +792,12 @@ pub(crate) fn audio_channels_label(channels: i32) -> String {
 /// exactly its announced byte count either. Inside this band the grab and the
 /// import are looking at the same release, so the import scores the size term
 /// on the **announced** size (option c of the grab-vs-import size decision):
-/// the number the grab admitted is the number the import sees. Below it the
-/// shortfall is real — a truncated, stripped or mislabelled payload — and the
-/// import scores what actually landed.
+/// the number the grab admitted is the number the import sees. Outside the
+/// reciprocal band the difference is material, so the import scores what
+/// actually landed. The upper bound matters when an indexer reports one pack
+/// member's size but the landed file contains the complete aggregate.
 pub(crate) const SIZE_OVERHEAD_TOLERANCE: f64 = 0.85;
 
-/// The byte count the size term is scored on for a landed file.
-///
-/// `announced` is the release's advertised size (`download_submissions.release_size_bytes`
-/// at import, `media_files.announced_size_bytes` when the bar is re-derived);
-/// `landed` is the file on disk. Returns `announced` when the landed file is at
-/// least [`SIZE_OVERHEAD_TOLERANCE`] of it, otherwise `landed`. Both the import
-/// decision and the incumbent bar go through here so the re-derived bar
-/// reproduces the import score for this term.
 /// What the media-file row should remember as its announced size: the
 /// announced size when the import scored on it, `None` when the landed size was
 /// the basis. Persisting only the engaged case keeps the column honest — a row
@@ -814,12 +807,21 @@ pub(crate) fn persisted_announced_size_bytes(landed: i64, announced: Option<i64>
     announced.filter(|announced| size_basis_bytes(landed, Some(*announced)) == *announced)
 }
 
+/// The byte count the size term is scored on for a landed file.
+///
+/// `announced` is the release's advertised size (`download_submissions.release_size_bytes`
+/// at import, `media_files.announced_size_bytes` when the bar is re-derived);
+/// `landed` is the file on disk. Returns `announced` only when the landed ratio
+/// is between [`SIZE_OVERHEAD_TOLERANCE`] and its reciprocal, otherwise
+/// `landed`. Both the import decision and the incumbent bar go through here so
+/// the re-derived bar reproduces the import score for this term.
 pub(crate) fn size_basis_bytes(landed: i64, announced: Option<i64>) -> i64 {
     match announced {
         Some(announced)
             if announced > 0
                 && landed > 0
-                && (landed as f64) >= SIZE_OVERHEAD_TOLERANCE * (announced as f64) =>
+                && (landed as f64) >= SIZE_OVERHEAD_TOLERANCE * (announced as f64)
+                && (landed as f64) <= (announced as f64) / SIZE_OVERHEAD_TOLERANCE =>
         {
             announced
         }
