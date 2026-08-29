@@ -260,6 +260,10 @@ type ActivityEventPayload {
 	"""
 	facet: MediaFacetValue
 	"""
+	Episodes affected by the activity when it originated from an import.
+	"""
+	episodeIds: [ID!]!
+	"""
 	Human-readable activity message.
 	"""
 	message: String!

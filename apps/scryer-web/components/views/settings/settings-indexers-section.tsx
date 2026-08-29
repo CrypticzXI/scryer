@@ -1,7 +1,7 @@
 import * as React from "react";
 import {
   Edit,
-  History,
+  Logs,
   Lock,
   Plus,
   Power,
@@ -1279,23 +1279,21 @@ export function SettingsIndexersSection({
             className="[&_td]:px-2 [&_th]:px-2"
           >
             <colgroup>
-              <col className="w-[11%]" />
-              <col className="w-[9%]" />
               <col className="w-[13%]" />
-              <col className="w-[6%]" />
-              <col className="w-[14%]" />
-              <col className="w-[14%]" />
+              <col className="w-[10%]" />
+              <col className="w-[7%]" />
+              <col className="w-[16%]" />
+              <col className="w-[16%]" />
               <col className="w-[5%]" />
               <col className="w-[6%]" />
               <col className="w-[4%]" />
-              <col className="w-[7%]" />
-              <col className="w-[11%]" />
+              <col className="w-[10%]" />
+              <col className="w-[13%]" />
             </colgroup>
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
                 <TableHead>{t("settings.indexerProvider")}</TableHead>
-                <TableHead>{t("settings.baseUrl")}</TableHead>
                 <TableHead>Proxy</TableHead>
                 <TableHead>
                   {t("settings.indexerDownloadClient")}
@@ -1362,9 +1360,6 @@ export function SettingsIndexersSection({
                     <IndexerProviderTypeCell
                       providerType={indexer.providerType}
                     />
-                  </TableCell>
-                  <TableCell className="max-w-[260px] truncate">
-                    {indexer.baseUrl}
                   </TableCell>
                   <TableCell>
                     {assignedProxy ? (
@@ -1465,7 +1460,7 @@ export function SettingsIndexersSection({
                         })}
                         label={t("indexerErrors.history")}
                       >
-                        <History className="h-4 w-4" />
+                        <Logs className="h-4 w-4" />
                       </IndexerActionButton>
                       {!indexer.isManaged && indexer.supportsManagedChildrenSync ? (
                         <IndexerActionButton
