@@ -4270,6 +4270,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let mut reusable_strategies = reusable_strategies;
                 let mut any_strategy_fired = false;
                 let mut all_strategies_complete = true;
+                let mut only_unattested_incompleteness = true;
                 let mut primary_attempted;
                 let mut primary_had_error;
                 let mut primary_usable_result_count = 0_usize;
@@ -4319,7 +4320,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                     || primary_selection.deferred_count > 0
                     || !primary_selection.live.is_empty();
                 primary_had_error = primary_selection.deferred_count > 0;
-                all_strategies_complete &= primary_selection.deferred_count == 0;
+                if primary_selection.deferred_count > 0 {
+                    all_strategies_complete = false;
+                    only_unattested_incompleteness = false;
+                }
                 primary_usable_result_count = primary_usable_result_count
                     .saturating_add(primary_selection.replayed_result_count);
                 let primary_live = primary_selection.live;
@@ -4335,6 +4339,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 } else {
                     primary_had_error = true;
                     all_strategies_complete = false;
+                    only_unattested_incompleteness = false;
                     StrategyTierOutcomes::Legacy(tokio::task::JoinSet::new())
                 };
 
@@ -4360,6 +4365,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     batch_had_timeout |= outcome.timed_out;
                     if !outcome.request_fired {
                         all_strategies_complete = false;
+                        only_unattested_incompleteness = false;
                         if outcome.response.as_ref().is_err_and(|err| err.is_canceled()) {
                             return (
                                 indexer_id,
@@ -4381,8 +4387,16 @@ impl IndexerClient for MultiIndexerSearchClient {
                     let diagnostic_labels = outcome.labels.join("|");
                     match outcome.response {
                         Ok(mut response) => {
-                            all_strategies_complete &=
-                                response.completion == IndexerSearchCompletion::Complete;
+                            if response.completion != IndexerSearchCompletion::Complete {
+                                all_strategies_complete = false;
+                                only_unattested_incompleteness &= matches!(
+                                    response.completion,
+                                    IndexerSearchCompletion::Partial {
+                                        reason: Some(IndexerSearchIncompleteReason::Unattested),
+                                        ..
+                                    }
+                                );
+                            }
                             let raw_result_count = response.results.len();
                             batch_health.mark_success();
                             debug!(
@@ -4526,6 +4540,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             }
                             primary_had_error = true;
                             all_strategies_complete = false;
+                            only_unattested_incompleteness = false;
                             if let Some(diagnostics) = search_diagnostics.as_ref() {
                                 diagnostics
                                     .record_error(
@@ -4618,7 +4633,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                             );
                         }
                     };
-                    all_strategies_complete &= fallback_selection.deferred_count == 0;
+                    if fallback_selection.deferred_count > 0 {
+                        all_strategies_complete = false;
+                        only_unattested_incompleteness = false;
+                    }
                     let fallback_live = fallback_selection.live;
                     let mut fallback_outcomes = if fallback_live.is_empty() {
                         StrategyTierOutcomes::Legacy(tokio::task::JoinSet::new())
@@ -4631,6 +4649,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         )
                     } else {
                         all_strategies_complete = false;
+                        only_unattested_incompleteness = false;
                         StrategyTierOutcomes::Legacy(tokio::task::JoinSet::new())
                     };
 
@@ -4656,6 +4675,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         batch_had_timeout |= outcome.timed_out;
                         if !outcome.request_fired {
                             all_strategies_complete = false;
+                            only_unattested_incompleteness = false;
                             if outcome.response.as_ref().is_err_and(|err| err.is_canceled()) {
                                 return (
                                     indexer_id,
@@ -4676,8 +4696,18 @@ impl IndexerClient for MultiIndexerSearchClient {
                         let diagnostic_labels = outcome.labels.join("|");
                         match outcome.response {
                             Ok(mut response) => {
-                                all_strategies_complete &=
-                                    response.completion == IndexerSearchCompletion::Complete;
+                                if response.completion != IndexerSearchCompletion::Complete {
+                                    all_strategies_complete = false;
+                                    only_unattested_incompleteness &= matches!(
+                                        response.completion,
+                                        IndexerSearchCompletion::Partial {
+                                            reason: Some(
+                                                IndexerSearchIncompleteReason::Unattested
+                                            ),
+                                            ..
+                                        }
+                                    );
+                                }
                                 let raw_result_count = response.results.len();
                                 batch_health.mark_success();
                                 debug!(
@@ -4803,6 +4833,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     );
                                 }
                                 all_strategies_complete = false;
+                                only_unattested_incompleteness = false;
                                 if let Some(diagnostics) = search_diagnostics.as_ref() {
                                     diagnostics
                                         .record_error(
@@ -4945,7 +4976,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                             IndexerSearchCompletion::Complete
                         } else {
                             IndexerSearchCompletion::Partial {
-                                reason: None,
+                                reason: only_unattested_incompleteness
+                                    .then_some(IndexerSearchIncompleteReason::Unattested),
                                 retry_after: scheduler_retry_after,
                             }
                         },

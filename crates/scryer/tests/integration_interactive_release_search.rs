@@ -720,9 +720,11 @@ async fn rate_limited_indexer_is_marked_failed_and_healthy_results_survive() {
         reason.contains("limit") || reason.contains("429") || reason.contains("rate"),
         "failure reason should mention rate limiting: {limited_view:?}"
     );
+    let healthy_view = indexer_status(&done, "healthy-a");
     assert_eq!(
-        indexer_status(&done, "healthy-a").status,
-        InteractiveReleaseSearchIndexerStatus::Completed
+        healthy_view.status,
+        InteractiveReleaseSearchIndexerStatus::Completed,
+        "healthy indexer should complete: {healthy_view:?}"
     );
 }
 

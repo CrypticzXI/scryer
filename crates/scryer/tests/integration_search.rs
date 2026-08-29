@@ -696,7 +696,6 @@ async fn nzbgeek_search_rate_limited() {
 #[tokio::test]
 async fn nzbgeek_search_server_error_fallback() {
     let ctx = TestContext::new().await;
-    let _call_count = 0u32;
 
     // First call (movie search) returns 500, second (fallback search) returns results.
     // Since wiremock mocks are matched in reverse order, mount the fallback first.
@@ -736,7 +735,6 @@ async fn nzbgeek_search_server_error_fallback() {
         )
         .await;
 
-    // The client should fall back to t=search on 500
     assert!(
         results.is_ok(),
         "should fall back to generic search on 500: {:?}",

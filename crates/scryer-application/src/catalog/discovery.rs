@@ -30,6 +30,7 @@ struct PreparedReleaseScoringInputs {
 pub(crate) struct ScoredSearchOutcome {
     pub results: Vec<IndexerSearchResult>,
     pub complete_indexer_ids: Vec<String>,
+    pub incomplete_indexer_reasons: HashMap<String, String>,
     pub search_session_id: String,
 }
 
@@ -387,6 +388,42 @@ fn record_query_coverage_outcomes(
                 all_complete: query_complete,
             });
     }
+}
+
+fn incomplete_indexer_reason(outcome: IndexerSearchOutcome) -> Option<String> {
+    let (reason, retry_after) = match outcome {
+        IndexerSearchOutcome::Complete { .. } => return None,
+        IndexerSearchOutcome::Partial {
+            reason: Some(IndexerSearchIncompleteReason::RateLimited),
+            retry_after,
+            ..
+        } => ("indexer search was rate limited", retry_after),
+        // Unattested legacy responses are operationally successful; they only
+        // withhold convergence coverage until the plugin declares semantics.
+        IndexerSearchOutcome::Partial {
+            reason: Some(IndexerSearchIncompleteReason::Unattested),
+            ..
+        } => return None,
+        IndexerSearchOutcome::Partial {
+            reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
+            retry_after,
+            ..
+        } => ("indexer upstream search failed", retry_after),
+        IndexerSearchOutcome::Partial { retry_after, .. } => {
+            ("indexer search returned partial results", retry_after)
+        }
+        IndexerSearchOutcome::Deferred { retry_after } => {
+            ("indexer search was deferred", retry_after)
+        }
+        IndexerSearchOutcome::Skipped { retry_after } => {
+            ("indexer search was skipped", retry_after)
+        }
+        IndexerSearchOutcome::Errored => ("indexer search failed", None),
+    };
+    Some(match retry_after {
+        Some(delay) => format!("{reason}; retry after {}s", delay.as_secs()),
+        None => reason.to_string(),
+    })
 }
 
 fn completely_covered_indexers(
@@ -1197,6 +1234,7 @@ impl AppUseCase {
                 return Ok(ScoredSearchOutcome {
                     results: Vec::new(),
                     complete_indexer_ids: Vec::new(),
+                    incomplete_indexer_reasons: HashMap::new(),
                     search_session_id: Uuid::new_v4().to_string(),
                 });
             }
@@ -1329,6 +1367,7 @@ impl AppUseCase {
         // query. Candidates from incomplete queries remain usable, but one
         // partial, missing, or failed query withholds coverage for that indexer.
         let mut coverage_by_indexer = HashMap::new();
+        let mut incomplete_indexer_reasons = HashMap::new();
 
         loop {
             if !page_source_open && !search_tasks_open {
@@ -1389,6 +1428,13 @@ impl AppUseCase {
             match result {
                 Ok(Ok(response)) => {
                     successful_searches += 1;
+                    for outcome in &response.indexer_outcomes {
+                        if let Some(reason) = incomplete_indexer_reason(outcome.outcome) {
+                            incomplete_indexer_reasons
+                                .entry(outcome.indexer_id.clone())
+                                .or_insert(reason);
+                        }
+                    }
                     record_query_coverage_outcomes(
                         &mut coverage_by_indexer,
                         &response.indexer_outcomes,
@@ -1432,6 +1478,7 @@ impl AppUseCase {
                 coverage_by_indexer,
                 required_query_count,
             ),
+            incomplete_indexer_reasons,
             search_session_id,
         })
     }
@@ -1473,7 +1520,35 @@ impl AppUseCase {
         restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
         background_value: Option<f64>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        let outcome = self
+        Ok(self
+            .search_and_evaluate_subject_restricted_with_outcome(
+                title,
+                subject,
+                caller_label,
+                mode,
+                cancel_token,
+                restrict_to_indexer_ids,
+                background_value,
+            )
+            .await?
+            .results)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "interactive search also needs the restricted indexer's completion status"
+    )]
+    pub(crate) async fn search_and_evaluate_subject_restricted_with_outcome(
+        &self,
+        title: &Title,
+        subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+        caller_label: &str,
+        mode: SearchMode,
+        cancel_token: CancellationToken,
+        restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+        background_value: Option<f64>,
+    ) -> AppResult<ScoredSearchOutcome> {
+        let mut outcome = self
             .search_and_score_subject_restricted_with_fired_indexers(
                 title,
                 subject,
@@ -1484,7 +1559,7 @@ impl AppUseCase {
                 background_value,
             )
             .await?;
-        let evaluated = self
+        outcome.results = self
             .evaluate_search_results_for_subject(
                 title,
                 subject,
@@ -1495,7 +1570,7 @@ impl AppUseCase {
         if self
             .finalize_evaluated_search_session_or_warn(
                 &outcome.search_session_id,
-                &evaluated,
+                &outcome.results,
                 &title.id,
             )
             .await
@@ -1503,7 +1578,7 @@ impl AppUseCase {
             self.record_search_coverage(title, subject, &outcome.complete_indexer_ids)
                 .await;
         }
-        Ok(evaluated)
+        Ok(outcome)
     }
 
     /// Search and score `subject` while leaving admission evaluation to the
