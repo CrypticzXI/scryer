@@ -182,6 +182,7 @@ pub(crate) enum ReleaseAutoDecisionCode {
     RepackGroupMismatch,
     MinimumSeeders,
     PackBelowMissingThreshold,
+    SubtitlesOnly,
 }
 
 impl ReleaseAutoDecisionCode {
@@ -213,6 +214,7 @@ impl ReleaseAutoDecisionCode {
             "repack_group_mismatch" => Some(Self::RepackGroupMismatch),
             "minimum_seeders" => Some(Self::MinimumSeeders),
             "pack_below_missing_threshold" => Some(Self::PackBelowMissingThreshold),
+            "subtitles_only" => Some(Self::SubtitlesOnly),
             _ => None,
         }
     }
@@ -243,6 +245,7 @@ impl ReleaseAutoDecisionCode {
             Self::RepackGroupMismatch => "repack_group_mismatch",
             Self::MinimumSeeders => "minimum_seeders",
             Self::PackBelowMissingThreshold => "pack_below_missing_threshold",
+            Self::SubtitlesOnly => "subtitles_only",
         }
     }
 
@@ -288,6 +291,7 @@ impl ReleaseAutoDecisionCode {
             Self::PackBelowMissingThreshold => {
                 "series pack does not meet the missing-episode threshold"
             }
+            Self::SubtitlesOnly => "release carries subtitles only and no video",
         }
     }
 
@@ -1477,10 +1481,36 @@ pub(crate) fn automatic_candidate_delay_decision(
     )
 }
 
+/// Terminal extensions that mark a release as carrying subtitles and nothing
+/// else. `mks` is Matroska's subtitle-only container; `sup` is a PGS bitmap
+/// track. Wider than `scryer_domain::SUBTITLE_EXTENSIONS`, which classifies
+/// files on disk rather than release names.
+const SUBTITLES_ONLY_RELEASE_EXTENSIONS: &[&str] =
+    &["mks", "srt", "ass", "ssa", "sub", "idx", "vtt", "sup"];
+
+/// Only a terminal extension counts: `...mks.mkv` is a video release, and
+/// "subs" or "ass" inside a release name is just a word.
+fn release_title_is_subtitles_only(release_title: &str) -> bool {
+    release_title
+        .trim_end()
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| {
+            SUBTITLES_ONLY_RELEASE_EXTENSIONS
+                .iter()
+                .any(|subtitle_extension| extension.eq_ignore_ascii_case(subtitle_extension))
+        })
+}
+
 pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
 ) -> ReleaseAutoDecisionCode {
+    // Ahead of every other gate: a subtitle-only release carries no video, so
+    // nothing the rest of the ladder measures can make it grabbable.
+    if release_title_is_subtitles_only(&candidate.title) {
+        return ReleaseAutoDecisionCode::SubtitlesOnly;
+    }
+
     let parse_state = candidate_parse_state(candidate);
     let title_match = candidate_title_match(candidate, &context.subject.title_evidence);
     let matches_title = title_match.is_some();
@@ -3042,6 +3072,57 @@ mod tests {
             last_search_at: None,
             submission_scope: SubmissionScope::Title,
         }
+    }
+
+    #[test]
+    fn subtitle_containers_are_recognised_only_as_a_terminal_extension() {
+        for subtitles_only in [
+            "Quiet.Meridian.S01E01.1080p.WEB-DL-GroupTag.mks",
+            "Quiet.Meridian.S01E01.1080p.WEB-DL-GroupTag.MKS",
+            "Quiet.Meridian.S01E01.1080p.WEB-DL-GroupTag.srt",
+            "Quiet.Meridian.S01E01.1080p.WEB-DL-GroupTag.sup",
+        ] {
+            assert!(
+                release_title_is_subtitles_only(subtitles_only),
+                "{subtitles_only} carries subtitles only"
+            );
+        }
+
+        for content in [
+            "Quiet.Meridian.S01E01.1080p.WEB-DL-GroupTag.mks.mkv",
+            "Quiet.Meridian.S01E01.1080p.WEB-DL.[subs included]-GroupTag",
+            "Quiet.Meridian.S01E01.ass.kicker.1080p.WEB-DL-GroupTag",
+            "Quiet Meridian S01E01 1080p WEB-DL GroupTag",
+        ] {
+            assert!(
+                !release_title_is_subtitles_only(content),
+                "{content} is a content release"
+            );
+        }
+    }
+
+    #[test]
+    fn a_subtitles_only_candidate_is_never_admissible() {
+        let mut title = make_title();
+        title.name = "Quiet Meridian".to_string();
+        title.facet = MediaFacet::Series;
+        title.tagged_aliases = Vec::new();
+        let subject = numbering_scoped_subject(&title, Some(1), Some(1));
+
+        let mut subtitles_only =
+            make_candidate("Quiet.Meridian.S01E01.1080p.WEB-DL-GroupTag.mks", None);
+        subtitles_only.quality_profile_decision = Some(allowed_quality_decision(2400));
+        assert_eq!(
+            decision_for(&title, &subject, &subtitles_only),
+            ReleaseAutoDecisionCode::SubtitlesOnly
+        );
+
+        let mut content = make_candidate("Quiet.Meridian.S01E01.1080p.WEB-DL-GroupTag.mkv", None);
+        content.quality_profile_decision = Some(allowed_quality_decision(2400));
+        assert_eq!(
+            decision_for(&title, &subject, &content),
+            ReleaseAutoDecisionCode::Eligible
+        );
     }
 
     #[test]

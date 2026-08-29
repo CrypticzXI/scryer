@@ -296,6 +296,7 @@ fn rss_is_permanent_rejection(code: ReleaseAutoDecisionCode) -> bool {
             | ReleaseAutoDecisionCode::TitleMismatch
             | ReleaseAutoDecisionCode::EpisodeMismatch
             | ReleaseAutoDecisionCode::EpisodeNotMonitored
+            | ReleaseAutoDecisionCode::SubtitlesOnly
     )
 }
 
@@ -3646,6 +3647,7 @@ mod tests {
             ReleaseAutoDecisionCode::TitleMismatch,
             ReleaseAutoDecisionCode::EpisodeMismatch,
             ReleaseAutoDecisionCode::EpisodeNotMonitored,
+            ReleaseAutoDecisionCode::SubtitlesOnly,
         ] {
             assert!(rss_is_permanent_rejection(code));
         }
