@@ -15382,6 +15382,10 @@ type RecycledItemPayload {
 	"""
 	recycledAt: DateTime!
 	"""
+	Time the retention policy schedules this file for permanent deletion in UTC.
+	"""
+	scheduledDeletionAt: DateTime!
+	"""
 	Media root containing the original file.
 	"""
 	mediaRoot: String!
