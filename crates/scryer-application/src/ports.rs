@@ -1,7 +1,7 @@
 use super::*;
 use crate::contracts::{
     ClientJobLocator, DownloadClientBindingRecord, DownloadRecord, ObservationResolution,
-    ObservedClientJob,
+    ObservedClientJob, TerminalDownloadHistoryRow,
 };
 use crate::types::{
     ApiKeyRecord, EpisodeMediaAvailability, IndexerSearchPlanCapability, IndexerSearchPlanRequest,
@@ -3585,6 +3585,27 @@ pub struct IdentityTrackedStateTarget<'a> {
 #[async_trait]
 pub trait DownloadSubmissionRepository: Send + Sync {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
+
+    /// The most recent downloads whose durable tracked state is terminal
+    /// (imported / failed / ignored), newest first, capped at `limit`.
+    ///
+    /// Download history is projected from the live client snapshot, which is
+    /// only as durable as the client's own list: rTorrent (among others) evicts
+    /// finished jobs, and an imported download then disappeared from history
+    /// entirely. These rows are merged into that projection so a finished grab
+    /// stays visible once the client forgets it.
+    ///
+    /// Terminality is read the same way `bound_download_is_terminal_tx` reads
+    /// it — the canonical identity state first, then the submission's
+    /// `tracked_state` — so this cannot drift into a parallel notion of "done".
+    /// Defaults to empty so a store without the query simply contributes no
+    /// durable rows.
+    async fn list_terminal_download_history_rows(
+        &self,
+        _limit: usize,
+    ) -> AppResult<Vec<TerminalDownloadHistoryRow>> {
+        Ok(Vec::new())
+    }
 
     /// The grab-time infohash of a submission for this title whose release
     /// title normalizes to `normalized_release_name`, when one was recorded.

@@ -287,7 +287,7 @@ pub use contracts::{
     StagedNzbRef, StorageRootUsage, SubmissionConflictPolicy, SubmissionScope,
     SubmissionScopeConflict, SubtitleGenerationInput, SubtitleProviderConfigUpdate,
     SubtitleProviderValidationResult, SubtitleStreamDetail, SuccessfulGrabCommit,
-    TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
+    TerminalDownloadHistoryRow, TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
 };
 pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{
