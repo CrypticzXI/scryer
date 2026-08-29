@@ -609,8 +609,8 @@ mod tests {
         let bundle =
             compile_source_bundle(&source_db_root()).expect("compile source migration bundle");
         assert!(
-            bundle.catalog.find_migration(177).is_some(),
-            "migration 0177 must be registered in migration_manifest.toml"
+            bundle.catalog.find_migration(198).is_some(),
+            "migration 0198 must be registered in migration_manifest.toml"
         );
         assert!(
             bundle
@@ -625,6 +625,20 @@ mod tests {
                 .latest_baseline_at_or_below(140, EngineScope::Postgres)
                 .is_some_and(|baseline| baseline.file == "postgres/baselines/0140_baseline.sql"),
             "PostgreSQL should register the latest manifest-owned baseline"
+        );
+        assert!(
+            bundle
+                .catalog
+                .latest_baseline_at_or_below(198, EngineScope::Sqlite)
+                .is_some_and(|baseline| baseline.file == "baselines/0198_baseline.sql"),
+            "SQLite should register the 0198 baseline"
+        );
+        assert!(
+            bundle
+                .catalog
+                .latest_baseline_at_or_below(198, EngineScope::Postgres)
+                .is_some_and(|baseline| baseline.file == "postgres/baselines/0198_baseline.sql"),
+            "PostgreSQL should register the 0198 baseline"
         );
     }
 
@@ -692,6 +706,18 @@ mod tests {
             assert!(
                 postgres.contains(seed),
                 "PostgreSQL baseline missing seed {seed}"
+            );
+        }
+        for guard in [
+            "INNER JOIN libraries parent",
+            "parent.id = roots.library_id",
+            "parent.facet = roots.facet",
+            "parent.slug = roots.slug",
+            "ON CONFLICT DO NOTHING",
+        ] {
+            assert!(
+                postgres.contains(guard),
+                "PostgreSQL 0198 must guard canonical roots with `{guard}`"
             );
         }
     }

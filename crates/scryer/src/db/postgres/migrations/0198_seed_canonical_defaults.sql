@@ -4,10 +4,18 @@ INSERT INTO libraries (id, facet, name, slug, is_default, created_at, updated_at
     ('series_default_library', 'series', 'Series', 'series', true, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z')
 ON CONFLICT DO NOTHING;
 
-INSERT INTO library_roots (id, library_id, path, normalized_path, is_default, created_at, updated_at) VALUES
-    ('canonical_root_for_anime_default_library', 'anime_default_library', '/data/anime', '/data/anime', true, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z'),
-    ('canonical_root_for_movie_default_library', 'movie_default_library', '/data/movies', '/data/movies', true, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z'),
-    ('canonical_root_for_series_default_library', 'series_default_library', '/data/series', '/data/series', true, '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z')
+INSERT INTO library_roots (id, library_id, path, normalized_path, is_default, created_at, updated_at)
+SELECT roots.id, roots.library_id, roots.path, roots.normalized_path, true,
+       '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z'
+FROM (VALUES
+    ('canonical_root_for_anime_default_library', 'anime_default_library', 'anime', 'anime', '/data/anime', '/data/anime'),
+    ('canonical_root_for_movie_default_library', 'movie_default_library', 'movie', 'movies', '/data/movies', '/data/movies'),
+    ('canonical_root_for_series_default_library', 'series_default_library', 'series', 'series', '/data/series', '/data/series')
+) AS roots(id, library_id, facet, slug, path, normalized_path)
+INNER JOIN libraries parent
+        ON parent.id = roots.library_id
+       AND parent.facet = roots.facet
+       AND parent.slug = roots.slug
 ON CONFLICT DO NOTHING;
 
 INSERT INTO quality_profiles (id, name, scope, scope_id, archival_quality, allow_unknown_quality, atmos_preferred, dolby_vision_allowed, detected_hdr_allowed, prefer_remux, allow_bd_disk, allow_upgrades, created_at, prefer_dual_audio, required_audio_languages, scoring_config) VALUES

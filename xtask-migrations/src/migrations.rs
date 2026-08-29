@@ -425,7 +425,7 @@ impl DockerPostgresContainer {
             "POSTGRES_PASSWORD=postgres",
             "-p",
             &format!("127.0.0.1:{port}:5432"),
-            "postgres:17-alpine",
+            "postgres:18-alpine",
         ]);
         run_capture(&mut command).with_context(|| {
             format!(

@@ -1580,3 +1580,13 @@ engine = "sqlite"
 through_version = 140
 file = "postgres/baselines/0140_baseline.sql"
 engine = "postgres"
+
+[[baseline]]
+through_version = 198
+file = "baselines/0198_baseline.sql"
+engine = "sqlite"
+
+[[baseline]]
+through_version = 198
+file = "postgres/baselines/0198_baseline.sql"
+engine = "postgres"
