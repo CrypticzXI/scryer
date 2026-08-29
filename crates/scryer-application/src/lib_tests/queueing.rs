@@ -3248,11 +3248,13 @@ async fn queue_best_release_prefers_first_auto_eligible_candidate() {
         submissions[0].source_title.as_deref(),
         Some("Target.Show.2026.1080p.WEB-DL")
     );
-    assert!(
-        submissions[0]
-            .request_signature
-            .as_deref()
-            .is_some_and(|signature| signature.contains("Target.Show.2026.1080p.WEB-DL"))
+    assert_eq!(
+        submissions[0].request_signature,
+        crate::helpers::normalize_release_selection_signature(
+            Some("https://example.invalid/download/1.nzb"),
+            Some("Target.Show.2026.1080p.WEB-DL"),
+            Some(DownloadSourceKind::NzbUrl),
+        )
     );
 }
 
