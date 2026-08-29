@@ -2,7 +2,9 @@ import { useEffect, useRef } from "react";
 import { useClient } from "urql";
 
 import { showCatalogAddToast } from "@/components/root/catalog-add-toast";
+import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { viewFromFacet } from "@/lib/facets/helpers";
 import { titleAutocompleteSelectionQuery } from "@/lib/graphql/queries";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
 import type { TitleRecord } from "@/lib/types";
@@ -14,7 +16,17 @@ const TITLE_ACTIVITY_KINDS = new Set([
 ]);
 const REPLAY_GRACE_MS = 2_000;
 
-export function GrabbedReleaseToastListener() {
+type GrabbedReleaseToastListenerProps = {
+  onOpenOverview?: (
+    targetView: ViewId,
+    overviewTarget: OverviewTitleTarget,
+    episodeId?: string,
+  ) => void;
+};
+
+export function GrabbedReleaseToastListener({
+  onOpenOverview,
+}: GrabbedReleaseToastListenerProps) {
   const client = useClient();
   const t = useTranslate();
   const mountedAtRef = useRef<number | null>(null);
@@ -51,6 +63,11 @@ export function GrabbedReleaseToastListener() {
           if (error || !title) {
             return;
           }
+          const episodeId =
+            activity.kind === "series_episode_imported" &&
+            activity.episodeIds?.length === 1
+              ? activity.episodeIds[0]
+              : undefined;
           showCatalogAddToast({
             titleName: title.name,
             year: title.year,
@@ -63,6 +80,15 @@ export function GrabbedReleaseToastListener() {
             posterEmptyLabel: t("label.noArt"),
             viewLabel: t("toast.viewInCatalog"),
             dismissLabel: t("label.dismiss"),
+            onView: onOpenOverview
+              ? () =>
+                  onOpenOverview(viewFromFacet(title.facet), {
+                    id: title.id,
+                    slug: title.slug,
+                    libraryId: title.libraryId,
+                    librarySlug: title.librarySlug,
+                  }, episodeId)
+              : undefined,
           });
         });
     },

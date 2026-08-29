@@ -1,6 +1,5 @@
 
 import * as React from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { Check, ChevronsUpDown, FileVideo, Loader2, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -128,7 +127,7 @@ function episodeLabel(ep: AvailableEpisode): string {
   const tag = `S${seasonTag}E${episodeTag}`;
   const absolute = ep.absoluteNumber?.trim();
   if (absolute) {
-    return `${tag} · Absolute ${absolute}${ep.title ? ` — ${ep.title}` : ""}`;
+    return `${tag} (${absolute})${ep.title ? ` ${ep.title}` : ""}`;
   }
   return ep.title ? `${tag} - ${ep.title}` : tag;
 }
@@ -257,14 +256,6 @@ function ManualImportTargetPickerContent({
     () => buildManualImportTargetRows(groupedEpisodes, seriesMovies, query),
     [groupedEpisodes, query, seriesMovies],
   );
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => (rows[index]?.kind === "group" ? 28 : 36),
-    getItemKey: (index) => rows[index]?.key ?? index,
-    overscan: 6,
-  });
-
   React.useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 });
   }, [query]);
@@ -272,7 +263,7 @@ function ManualImportTargetPickerContent({
   return (
     <PopoverContent
       align="start"
-      className="w-[var(--radix-popover-trigger-width)] min-w-[280px] p-2"
+      className="z-[90] w-[var(--radix-popover-trigger-width)] min-w-[280px] p-2"
     >
       <div className="relative mb-2">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -296,25 +287,10 @@ function ManualImportTargetPickerContent({
           aria-label="Import target"
           className="h-[280px] overflow-y-auto overscroll-contain"
         >
-          <div
-            className="relative w-full"
-            style={{ height: `${virtualizer.getTotalSize()}px` }}
-          >
-            {virtualizer.getVirtualItems().map((virtualRow) => {
-              const row = rows[virtualRow.index];
-              if (!row) {
-                return null;
-              }
-              return (
-                <div
-                  key={row.key}
-                  className="absolute left-0 top-0 w-full"
-                  style={{
-                    height: `${virtualRow.size}px`,
-                    transform: `translateY(${virtualRow.start}px)`,
-                  }}
-                >
-                  {row.kind === "group" ? (
+          <div className="w-full">
+            {rows.map((row) => (
+              <div key={row.key}>
+                {row.kind === "group" ? (
                     <div className="px-2 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
                       {row.label}
                     </div>
@@ -346,10 +322,9 @@ function ManualImportTargetPickerContent({
                       />
                       <span className="truncate">{row.label}</span>
                     </button>
-                  )}
-                </div>
-              );
-            })}
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -368,7 +343,7 @@ const ManualImportTargetSelect = React.memo(function ManualImportTargetSelect({
   const [open, setOpen] = React.useState(false);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover modal open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           type="button"
