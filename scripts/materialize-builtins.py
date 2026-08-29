@@ -358,8 +358,9 @@ def main() -> int:
             artifact = next(
                 (
                     item
+                    for runtime in ("wasm32-wasip2", "wasm32-wasip1")
                     for item in release.get("artifacts", [])
-                    if item.get("runtime") == "wasm32-wasip1"
+                    if item.get("runtime") == runtime
                     and not item.get("required_features")
                     and str(item.get("url", "")).endswith(".wasm.zst")
                 ),

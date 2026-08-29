@@ -1879,18 +1879,15 @@ fn validate_builtin_version_manifest(manifest: &BuiltinVersionManifest) -> Resul
         bail!("must select exactly the supported built-in plugins");
     }
     for (plugin_id, pin) in &manifest.plugins {
-        Version::parse(pin.version.trim_start_matches('v')).with_context(|| {
-            format!("has invalid version {} for {plugin_id}", pin.version)
-        })?;
+        Version::parse(pin.version.trim_start_matches('v'))
+            .with_context(|| format!("has invalid version {} for {plugin_id}", pin.version))?;
         if pin.wasm_blake3.len() != 64
             || !pin
                 .wasm_blake3
                 .chars()
                 .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
         {
-            bail!(
-                "has invalid wasm_blake3 for {plugin_id}: expected 64 lowercase hex characters"
-            );
+            bail!("has invalid wasm_blake3 for {plugin_id}: expected 64 lowercase hex characters");
         }
     }
     Ok(())
@@ -2870,17 +2867,18 @@ fn baseline_catalog_v3_zstd_artifact<'a>(
     plugin_id: &str,
     release: &'a CatalogV3Release,
 ) -> Result<&'a CatalogV3PluginArtifact> {
-    release
-        .artifacts
-        .iter()
-        .find(|artifact| {
-            artifact.runtime == "wasm32-wasip1"
-                && artifact.required_features.is_empty()
-                && artifact.url.ends_with(".wasm.zst")
+    ["wasm32-wasip2", "wasm32-wasip1"]
+        .into_iter()
+        .find_map(|runtime| {
+            release.artifacts.iter().find(|artifact| {
+                artifact.runtime == runtime
+                    && artifact.required_features.is_empty()
+                    && artifact.url.ends_with(".wasm.zst")
+            })
         })
         .ok_or_else(|| {
             anyhow!(
-                "{plugin_id} {} has no baseline wasm32-wasip1 .wasm.zst artifact",
+                "{plugin_id} {} has no baseline WASI .wasm.zst artifact",
                 release.version
             )
         })
@@ -3105,9 +3103,13 @@ fn refresh_builtin_plugins(
                 })
             })
             .transpose()?;
-        let (version, wasm_digest) =
-            sync_builtin_plugin(ctx, spec, scryer_version, pin.map(|pin| pin.version.as_str()))
-                .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
+        let (version, wasm_digest) = sync_builtin_plugin(
+            ctx,
+            spec,
+            scryer_version,
+            pin.map(|pin| pin.version.as_str()),
+        )
+        .with_context(|| format!("failed to sync builtin {}", spec.plugin_id))?;
         // The version pin names a release; the digest pin names its bytes. A
         // catalog that re-points the pinned version at different content is a
         // hard failure, never a silent re-materialization — the only way past
@@ -4577,6 +4579,35 @@ mod tests {
         let artifact = baseline_catalog_v3_zstd_artifact("newznab", &release).unwrap();
 
         assert_eq!(artifact.url, "https://cdn.example/newznab.wasm.zst");
+    }
+
+    #[test]
+    fn baseline_catalog_v3_zstd_artifact_prefers_wasip2() {
+        let release = CatalogV3Release {
+            version: "2.0.4".to_string(),
+            min_scryer_version: Some("0.18.22".to_string()),
+            max_scryer_version: None,
+            sdk_constraint: Some(">=3.9.0, <4.0.0".to_string()),
+            artifacts: vec![
+                catalog_v3_plugin_artifact(
+                    "https://cdn.example/newznab-legacy.wasm.zst",
+                    "wasm32-wasip1",
+                    vec![],
+                ),
+                catalog_v3_plugin_artifact(
+                    "https://cdn.example/newznab-component.wasm.zst",
+                    "wasm32-wasip2",
+                    vec![],
+                ),
+            ],
+        };
+
+        let artifact = baseline_catalog_v3_zstd_artifact("newznab", &release).unwrap();
+
+        assert_eq!(
+            artifact.url,
+            "https://cdn.example/newznab-component.wasm.zst"
+        );
     }
 
     #[test]
