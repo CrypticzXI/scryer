@@ -1874,11 +1874,11 @@ mod queue_query_unit_tests {
     fn submission_enrichment_prefers_raw_release_title() {
         let mut item = queue_item();
         let mut submitted = submission(SubmissionScope::Title);
-        submitted.source_title = Some("Judas.Bleach.252-279.BD-GROUP".to_string());
+        submitted.source_title = Some("GroupTag.Quiet.Meridian.252-279.BD-GROUP".to_string());
 
         apply_submission_to_queue_item(&mut item, &submitted);
 
-        assert_eq!(item.title_name, "Judas.Bleach.252-279.BD-GROUP");
+        assert_eq!(item.title_name, "GroupTag.Quiet.Meridian.252-279.BD-GROUP");
 
         item.title_name = "Client Display Name".to_string();
         submitted.source_title = Some("  ".to_string());

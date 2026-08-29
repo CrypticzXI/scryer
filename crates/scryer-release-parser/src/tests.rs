@@ -1227,8 +1227,8 @@ fn season_pack_range_sets_multi_season_contract_flag() {
 #[test]
 fn series_pack_markers_cover_complete_and_multi_season_release_names() {
     let complete = analyze_release_for_target(
-        "[AOmundson] Mirai Nikki Complete Series + Specials & Extras",
-        &context(ContextFacetHint::Series, "Mirai Nikki"),
+        "[GroupTag] Quiet Meridian Complete Series + Specials & Extras",
+        &context(ContextFacetHint::Series, "Quiet Meridian"),
     );
     let complete_episode = complete
         .best_candidate()
@@ -1238,8 +1238,8 @@ fn series_pack_markers_cover_complete_and_multi_season_release_names() {
     assert!(complete_episode.season_numbers.is_empty());
 
     let complete_with_extras = analyze_release_for_target(
-        "[DB] No Game No Life Complete Series+OVAs+Movie [BD 1080p]",
-        &context(ContextFacetHint::Series, "No Game No Life"),
+        "[GT] No Map No Meridian Complete Series+OVAs+Movie [BD 1080p]",
+        &context(ContextFacetHint::Series, "No Map No Meridian"),
     );
     assert!(
         complete_with_extras
@@ -1250,13 +1250,13 @@ fn series_pack_markers_cover_complete_and_multi_season_release_names() {
 
     for (release, title, expected_seasons) in [
         (
-            "[ItachiUchiha] The Dangers in My Heart S01+S02+OVAs [BD 1080p]",
-            "The Dangers in My Heart",
+            "[GroupTag] The Corners of My Study S01+S02+OVAs [BD 1080p]",
+            "The Corners of My Study",
             vec![1, 2],
         ),
         (
-            "[Judas] Spice and Wolf (Seasons 01-02) [BD 1080p]",
-            "Spice and Wolf",
+            "[GroupTag] Salt and Signal (Seasons 01-02) [BD 1080p]",
+            "Salt and Signal",
             vec![1, 2],
         ),
     ] {
@@ -1309,19 +1309,19 @@ fn explicit_single_episode_markers_beat_series_pack_markers() {
 fn movie_ova_and_bare_complete_markers_are_not_series_packs() {
     for (release, title) in [
         (
-            "The Garden of Sinners Complete Movie Series [BD 1080p]",
-            "The Garden of Sinners",
+            "The Harbor of Signals Complete Movie Series [BD 1080p]",
+            "The Harbor of Signals",
         ),
         (
-            "Strawberry Marshmallow Complete OVA Series [BD 1080p]",
-            "Strawberry Marshmallow",
+            "Meridian Marmalade Complete OVA Series [BD 1080p]",
+            "Meridian Marmalade",
         ),
         ("Show Complete Collection [BD 1080p]", "Show"),
         ("Show Complete Original Series [BD 1080p]", "Show"),
         ("Show Complete Subbed Collection [BD 1080p]", "Show"),
         ("Show All Seasons [BD 1080p]", "Show"),
-        ("Dragon Ball Season 01 to 09 [BD 1080p]", "Dragon Ball"),
-        ("Yatterman Complete [BD 1080p]", "Yatterman"),
+        ("Quiet Meridian Season 01 to 09 [BD 1080p]", "Quiet Meridian"),
+        ("Quietfall Complete [BD 1080p]", "Quietfall"),
         ("Show 01-24 [BD 1080p]", "Show"),
     ] {
         let analysis =
