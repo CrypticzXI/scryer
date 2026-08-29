@@ -2207,3 +2207,35 @@ fn bare_season_before_release_metadata_bounds_the_neutral_title() {
         isolated.normalized_title
     );
 }
+
+/// A spelled-out season plus an arc name defeated the same title anchor: the
+/// neutral title read "Quiet Meridian Season 1 The Arc Name" and the candidate
+/// failed title matching before its real title was ever compared.
+#[test]
+fn a_spelled_season_number_bounds_the_neutral_title() {
+    for release in
+        ["[GroupTag] Quiet Meridian - Season 1 - The Arc Name [BD 1080p][HEVC x265 10bit]"]
+    {
+        let parsed = parse_release_metadata(release);
+        assert_eq!(parsed.normalized_title, "QUIET MERIDIAN", "{release}");
+    }
+}
+
+/// The numeric successor is what makes the word a marker; without one the title
+/// keeps its own text. "Part 2" never bounds at all — in a sequel or multi-part
+/// title it is the part of the name that tells releases apart.
+#[test]
+fn a_spelled_season_without_a_number_keeps_the_title_text() {
+    for release in [
+        "[GroupTag] Quiet Meridian Season of the Lantern [BD 1080p]",
+        "Quiet.Meridian.Part.Two.1080p.BluRay.x264-GroupTag",
+        "Quiet.Meridian.Part.2.1080p.BluRay.x264-GroupTag",
+    ] {
+        let parsed = parse_release_metadata(release);
+        assert!(
+            parsed.normalized_title.len() > "QUIET MERIDIAN".len(),
+            "{release} truncated to {}",
+            parsed.normalized_title
+        );
+    }
+}
