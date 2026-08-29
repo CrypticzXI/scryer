@@ -1027,7 +1027,11 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       const destinationName = stream.destinationPath.split(/[\\/]/).pop() || stream.destinationPath;
 
       return (
-        <TableRow key={`active-import-${stream.id}`} className="bg-[var(--scry-accent-bg)]/25">
+        <TableRow
+          key={`active-import-${stream.id}`}
+          className="bg-[var(--scry-accent-bg)]/25"
+          data-ui="activity-row"
+        >
           <TableCell className="min-w-0 align-middle">
             <div className="truncate font-medium text-foreground" title={stream.destinationPath}>
               {destinationName}

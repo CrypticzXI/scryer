@@ -739,6 +739,21 @@ body {
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }
 
+/* Settings tables are scoped at their page shells so every current and future
+ * multi-column row gets one continuous hover band, even when a renderer has no
+ * row-specific data-ui hook. Catalog tables live outside these shells and keep
+ * their independently tuned row treatment. */
+.dark [data-slot="settings-main-scroll"] [data-slot="table-body"] [data-slot="table-row"]:has(> [data-slot="table-cell"] + [data-slot="table-cell"]):hover,
+.dark [data-slot="facet-settings-scroll"] [data-slot="table-body"] [data-slot="table-row"]:has(> [data-slot="table-cell"] + [data-slot="table-cell"]):hover {
+  background:
+    linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
+}
+
+.dark [data-slot="settings-main-scroll"] [data-slot="table-body"] [data-slot="table-row"]:has(> [data-slot="table-cell"] + [data-slot="table-cell"]):hover > [data-slot="table-cell"],
+.dark [data-slot="facet-settings-scroll"] [data-slot="table-body"] [data-slot="table-row"]:has(> [data-slot="table-cell"] + [data-slot="table-cell"]):hover > [data-slot="table-cell"] {
+  background: transparent;
+}
+
 .dark [data-ui="global-search"] {
   border-color: rgba(123, 140, 255, 0.22);
   background:
