@@ -2436,7 +2436,7 @@ const en: LocaleDictionary = {
   "color.rose": "Rose",
   "color.red": "Red",
   "color.fuchsia": "Fuchsia",
-  "color.biPrideMagenta": "Bi pride magenta",
+  "color.magenta": "Magenta",
   "color.crab": "Crab",
   "profile.changePassword": "Change Password",
   "profile.currentPassword": "Current Password",

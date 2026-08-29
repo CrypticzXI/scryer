@@ -3099,7 +3099,7 @@ const ru: LocaleDictionary = {
     "color.rose": "Розовый",
     "color.red": "Красный",
     "color.fuchsia": "Фуксия",
-    "color.biPrideMagenta": "Маджента би-прайда",
+    "color.magenta": "Маджента",
     "color.crab": "Крабовый",
 
     "profile.changePassword": "Изменить пароль",

@@ -89,7 +89,7 @@ export const HIGHLIGHT_COLOR_PRESETS: readonly HighlightColorPreset[] = [
   { value: "#f43f5e", labelKey: "color.rose" },
   { value: "#dc2626", labelKey: "color.red" },
   { value: "#c71684", labelKey: "color.fuchsia" },
-  { value: "#d60270", labelKey: "color.biPrideMagenta" },
+  { value: "#d60270", labelKey: "color.magenta" },
   { value: "#e8512f", labelKey: "color.crab" },
 ] as const;
 
