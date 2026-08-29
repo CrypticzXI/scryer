@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use scryer_application::{
     CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, challenge_solver as solver,
@@ -207,6 +207,19 @@ impl ComponentHost {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
+    fn remaining_operation_timeout(&self) -> Result<Duration, TransportError> {
+        let deadline = self
+            .inner
+            .operation_deadline
+            .lock()
+            .map(|deadline| *deadline)
+            .unwrap_or_else(|poisoned| *poisoned.into_inner());
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(TransportError::Timeout)
+    }
+
     fn provider_profile(&self) -> Option<Vec<u8>> {
         self.inner.provider_profile.clone()
     }
@@ -374,9 +387,8 @@ impl ComponentHost {
     ) -> Result<ComponentHttpResult, TransportError> {
         let method = reqwest::Method::from_bytes(request.method.as_bytes())
             .map_err(|_| TransportError::InvalidRequest)?;
-        let mut builder = client
-            .request(method, url.clone())
-            .timeout(self.inner.timeout);
+        let timeout = self.remaining_operation_timeout()?;
+        let mut builder = client.request(method, url.clone()).timeout(timeout);
         let merged_cookie = component_merged_cookie(request, extra_headers);
         for header in &request.headers {
             if extra_headers
@@ -421,7 +433,8 @@ impl ComponentHost {
         let provider = policy.config.provider_type;
         let solver_timeout = scryer_outbound_http::effective_indexer_proxy_request_timeout(
             policy.config.request_timeout_seconds,
-        );
+        )
+        .min(self.remaining_operation_timeout()?);
         let proxy_client =
             scryer_outbound_http::indexer_proxy_reqwest_client_with_extra_ca(extra_ca_bundle_pem)
                 .map_err(|_| {
@@ -1493,6 +1506,14 @@ mod tests {
     }
 
     fn component_solver_test_host(server_uri: String, proxy_id: &str) -> ComponentHost {
+        component_solver_test_host_with_timeout(server_uri, proxy_id, Duration::from_secs(120))
+    }
+
+    fn component_solver_test_host_with_timeout(
+        server_uri: String,
+        proxy_id: &str,
+        timeout: Duration,
+    ) -> ComponentHost {
         let now = chrono::Utc::now();
         ComponentHost::for_indexer(
             BTreeMap::new(),
@@ -1515,7 +1536,7 @@ mod tests {
                     updated_at: now,
                 },
             }),
-            Duration::from_secs(120),
+            timeout,
             Some(1024 * 1024),
         )
         .expect("component host should accept a configured solver")
@@ -1601,6 +1622,62 @@ mod tests {
             3,
             "the second request must use the cached clearance without another solver call"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn component_http_shares_one_deadline_across_solver_and_clearance_replay() {
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let target_url = format!("{}/search", server.uri());
+        Mock::given(method("POST"))
+            .and(path("/v1"))
+            .and(body_json(serde_json::json!({
+                "cmd": "request.get",
+                "url": target_url,
+                "maxTimeout": 60_000,
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(serde_json::json!({
+                        "status": "ok",
+                        "solution": {
+                            "url": target_url,
+                            "status": 200,
+                            "headers": {},
+                            "cookies": [{"name": "clearance", "value": "solved"}],
+                            "userAgent": "solver-test",
+                            "response": "<html><body>solver response</body></html>",
+                        },
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_string("origin response"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let host = component_solver_test_host_with_timeout(
+            server.uri(),
+            "component-solver-shared-deadline",
+            Duration::from_millis(150),
+        );
+        let error = host
+            .http(component_solver_request(target_url, Vec::new()))
+            .await
+            .expect_err("the replay must use only the solver operation's remaining budget");
+
+        assert_eq!(error, TransportError::Timeout);
     }
 
     #[tokio::test(flavor = "multi_thread")]
