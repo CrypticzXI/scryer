@@ -33,6 +33,8 @@ BUILTINS = {
     "newznab": "newznab_indexer",
     "torznab": "torznab_indexer",
 }
+CORE_WASM_V1_HEADER = b"\x00asm\x01\x00\x00\x00"
+WASM_COMPONENT_V1_HEADER = b"\x00asm\x0d\x00\x01\x00"
 
 
 def fail(message: str) -> None:
@@ -137,8 +139,8 @@ def read_leb(data: bytes, offset: int) -> tuple[int, int]:
 
 
 def embedded_descriptor(wasm: bytes) -> dict[str, Any]:
-    if wasm[:8] != b"\x00asm\x01\x00\x00\x00":
-        fail("downloaded builtin is not a WebAssembly v1 module")
+    if wasm[:8] not in {CORE_WASM_V1_HEADER, WASM_COMPONENT_V1_HEADER}:
+        fail("downloaded builtin is not a WebAssembly v1 module or component")
     offset = 8
     descriptor: bytes | None = None
     while offset < len(wasm):
