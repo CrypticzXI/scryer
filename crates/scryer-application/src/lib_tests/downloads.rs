@@ -5415,13 +5415,15 @@ async fn build_fail_closed_pack_fixture(
     )
 }
 
-/// Sparse stand-in episode file, sized to clear both size gates.
+/// Sparse stand-in episode file, sized like a real episode.
 ///
-/// It used to be 51 MiB, one megabyte over the sample threshold. Size scoring
-/// now also vetoes a file under a tenth of the size its quality and runtime
-/// imply (`size_implausibly_small_for_quality`), and 51 MiB is not a plausible
-/// 45-minute episode at any of the qualities these fixtures name. The file is
-/// sparse, so the byte count is close to free.
+/// It used to be 51 MiB, one megabyte over the import sample threshold — the
+/// only gate a file this small has to clear, now that size scoring penalises
+/// implausible smallness (`size_tiny_for_quality`) instead of refusing it. The
+/// size is kept where it is so these fixtures score in the ordinary part of the
+/// curve rather than at its bottom anchor, where a profile minimum could refuse
+/// them for reasons the tests are not about. The file is sparse, so the byte
+/// count is close to free.
 const PACK_VIDEO_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 fn write_pack_video(dir: &Path, file_name: &str) -> std::path::PathBuf {
@@ -5434,7 +5436,7 @@ fn write_pack_video(dir: &Path, file_name: &str) -> std::path::PathBuf {
         .open(&path)
         .expect("open source video fixture")
         .set_len(PACK_VIDEO_SIZE_BYTES)
-        .expect("size source video above the sample threshold and the minimum-size veto");
+        .expect("size source video above the import sample threshold");
     path
 }
 

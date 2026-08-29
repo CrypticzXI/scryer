@@ -122,7 +122,11 @@ pub(crate) struct ScoringContext<'a> {
     pub weights: &'a ScoringWeights,
     pub required_audio_languages: &'a [String],
     pub category: &'a str,
-    pub runtime_minutes: Option<i32>,
+    /// What size scoring compares the reported bytes against: the coverage's
+    /// total runtime, one member's, and the member count. Resolved once per
+    /// scope by the caller so every lane reads the same basis for the same
+    /// evidence.
+    pub size_basis: crate::quality_profile::CoverageSizeBasis,
     pub rules: Option<&'a scryer_rules::UserRulesEngine>,
     pub title_id: Option<&'a str>,
     pub library_name: Option<&'a str>,
@@ -383,7 +387,7 @@ fn run_term_pipeline(
         parsed,
         size_bytes,
         Some(ctx.category),
-        ctx.runtime_minutes,
+        ctx.size_basis,
         resolved_profile.criteria.prefer_remux,
         ctx.weights,
     );
@@ -447,7 +451,9 @@ fn append_rule_scores(
             has_existing_file: false,
             existing_score: None,
             search_mode: CANONICAL_RULE_SEARCH_MODE,
-            runtime_minutes: ctx.runtime_minutes,
+            // Rules see the scope's total runtime, which is what they always
+            // saw; the member split is the size term's business alone.
+            runtime_minutes: ctx.size_basis.total_runtime_minutes,
             is_filler: ctx.is_filler,
         },
         file_doc,
@@ -525,7 +531,7 @@ const POLICY_ONLY_BLOCK_CODES: &[&str] = &["score_below_minimum", "upgrade_block
 /// | code | assertable | why |
 /// |---|---|---|
 /// | `quality_*` | always | the resolution is the one claim every release name makes, and it is the claim the grab decision was taken on. A file whose measured height lands outside the profile's tiers is not what was fetched. |
-/// | `size_implausible*_for_quality` | always | both passes score the *same* bytes, so this can only be introduced when the landed quality moved — which is the quality claim again, seen through the size band. |
+/// | `size_implausible_for_quality` | always | both passes score the *same* bytes, so this can only be introduced when the landed quality moved — which is the quality claim again, seen through the size band. It is the only size veto left: implausible *smallness* is a penalty on the curve, never a block, so it cannot reach here at all. |
 /// | `video_codec_*` | iff the parse carried a codec | `H.265` in the name against an H.264 stream is a lie; a codec-silent name is not a claim. |
 /// | `audio_codec_*` | iff the parse carried an audio codec | same rule. Note the gate only fires at all when `normalized_audio_codecs` is non-empty, which for a silent name means the probe populated it. |
 /// | `hdr_not_allowed`, `dolby_vision_*` | never | derived from `video_hdr_format`; a profile that forbids them has refused this file, so import burns this release and convergence tries the next candidate. |

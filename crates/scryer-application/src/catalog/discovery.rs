@@ -959,7 +959,7 @@ impl AppUseCase {
             {
                 continue;
             }
-            let candidate_runtime_minutes = crate::acquisition_coverage::coverage_runtime_minutes(
+            let candidate_size_basis = crate::acquisition_coverage::coverage_size_basis(
                 &release_coverage,
                 &scored_release_metadata,
                 &prepared.catalog_episodes,
@@ -1004,9 +1004,7 @@ impl AppUseCase {
                     scored_release_metadata.clone(),
                     result.size_bytes,
                 ),
-                &prepared
-                    .canonical_context
-                    .view(candidate_runtime_minutes, false),
+                &prepared.canonical_context.view(candidate_size_basis, false),
             );
             let decision = scored_release.announced_decision;
 

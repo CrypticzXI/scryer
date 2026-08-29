@@ -284,7 +284,12 @@ fn rank_movie_media_file_for_primary(
     context: &crate::quality::canonical_context::ResolvedScoringContext,
     file: &TitleMediaFile,
 ) -> (usize, i32) {
-    let bar = app.incumbent_bar(file, context, None);
+    let bar = app.incumbent_bar(
+        file,
+        context,
+        // A movie is one member: the title's own runtime, filled in by `view`.
+        crate::quality_profile::CoverageSizeBasis::default(),
+    );
     (crate::admission::tier_sort_key(bar.tier_index), bar.score)
 }
 
