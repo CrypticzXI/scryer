@@ -2118,18 +2118,25 @@ impl MultiIndexerSearchClient {
         now: DateTime<Utc>,
         activity: SchedulerRssActivity,
     ) -> RssFreshnessContext {
-        const RSS_TARGET_INTERVAL_SECS: i64 = 15 * 60;
+        // The first poll of an indexer has no persisted cadence entry yet, so
+        // the phased window, the safe-poll time and the freshness risk are all
+        // derived from this interval. It has to honour
+        // `SCRYER_RSS_TARGET_INTERVAL_SECS` too, or the override would not take
+        // effect until after a full default-length window had already elapsed.
+        let rss_target_interval_secs = crate::upstream_scheduler::rss_target_interval()
+            .as_secs()
+            .clamp(1, i64::MAX as u64) as i64;
         let last_successful_poll_at = activity.last_successful_poll_at;
         let last_attempt_at = activity.last_attempt_at;
-        let phase = stable_phase_seconds(&config.id, RSS_TARGET_INTERVAL_SECS as u64) as i64;
+        let phase = stable_phase_seconds(&config.id, rss_target_interval_secs as u64) as i64;
         let timestamp = now.timestamp();
-        let window_start = timestamp - timestamp.rem_euclid(RSS_TARGET_INTERVAL_SECS);
+        let window_start = timestamp - timestamp.rem_euclid(rss_target_interval_secs);
         let phased_safe_poll_at =
             DateTime::<Utc>::from_timestamp(window_start + phase, 0).unwrap_or(now);
         let target_interval = activity
             .target_interval
             .and_then(|duration| chrono::Duration::from_std(duration).ok())
-            .unwrap_or_else(|| Duration::seconds(RSS_TARGET_INTERVAL_SECS));
+            .unwrap_or_else(|| Duration::seconds(rss_target_interval_secs));
         let latest_safe_poll_at = last_successful_poll_at
             .map(|last_activity| last_activity + target_interval)
             .or(activity.latest_safe_poll_at)
@@ -2138,14 +2145,14 @@ impl MultiIndexerSearchClient {
             last_successful_poll_at
                 .map(|last_activity| {
                     let elapsed = (now - last_activity).num_seconds().max(0) as f64;
-                    (elapsed / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
+                    (elapsed / rss_target_interval_secs as f64).clamp(0.0, 1.0)
                 })
                 .unwrap_or_else(|| {
                     if now >= latest_safe_poll_at {
                         1.0
                     } else {
                         let elapsed = timestamp - window_start;
-                        (elapsed as f64 / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
+                        (elapsed as f64 / rss_target_interval_secs as f64).clamp(0.0, 1.0)
                     }
                 })
         });
@@ -2155,7 +2162,7 @@ impl MultiIndexerSearchClient {
             last_attempt_at,
             target_interval: activity
                 .target_interval
-                .unwrap_or_else(|| std::time::Duration::from_secs(RSS_TARGET_INTERVAL_SECS as u64)),
+                .unwrap_or_else(|| std::time::Duration::from_secs(rss_target_interval_secs as u64)),
             latest_safe_poll_at,
             estimated_feed_depth: activity.estimated_feed_depth,
             freshness_risk,
