@@ -1,6 +1,6 @@
 use scryer_application::{AppError, AppResult};
 use scryer_infrastructure_sql::domain_event_payload::{
-    compact_legacy_domain_event_json, encode_domain_event_payload,
+    compact_legacy_domain_event_json, derive_domain_event_projections, encode_domain_event_payload,
 };
 use serde_json::Value;
 use sqlx::Row;
@@ -49,7 +49,7 @@ pub async fn compact_event_storage_sqlite(
                     "failed to encode domain event {event_id} ({event_type}): {error}"
                 ))
             })?;
-            let (import_status, delete_reason, download_id) = projections(&event_type, &value);
+            let projections = derive_domain_event_projections(&event_type, &value);
             sqlx::query(
                 "INSERT INTO domain_events (
                     sequence, event_id, occurred_at, actor_user_id, title_id, facet,
@@ -73,9 +73,9 @@ pub async fn compact_event_storage_sqlite(
             .bind(encoded)
             .bind(row.try_get::<String, _>("actor_kind").map_err(repo_error)?)
             .bind(row.try_get::<String, _>("actor_display_name").map_err(repo_error)?)
-            .bind(import_status)
-            .bind(delete_reason)
-            .bind(download_id)
+            .bind(projections.import_status)
+            .bind(projections.media_file_delete_reason)
+            .bind(projections.download_id)
             .execute(&mut **tx)
             .await
             .map_err(repo_error)?;
@@ -108,11 +108,7 @@ pub async fn compact_event_storage_sqlite(
                 .try_get::<Option<String>, _>("explanation_json")
                 .map_err(repo_error)?
                 .as_deref()
-                .map(|value| encode_release_explanation(value.as_bytes()))
-                .transpose()
-                .map_err(|error| {
-                    AppError::Repository(format!("failed to encode release decision {id}: {error}"))
-                })?;
+                .and_then(|value| encode_release_explanation_or_null(&id, value.as_bytes()));
             sqlx::query(
                 "INSERT INTO release_decisions (
                     id, wanted_item_id, title_id, release_title, release_url,
@@ -200,7 +196,7 @@ pub async fn compact_event_storage_postgres(
                     "failed to encode domain event {event_id} ({event_type}): {error}"
                 ))
             })?;
-            let (import_status, delete_reason, download_id) = projections(&event_type, &value);
+            let projections = derive_domain_event_projections(&event_type, &value);
             sqlx::query(
                 "UPDATE domain_events
                     SET payload_json = $1, import_status = $2,
@@ -208,9 +204,9 @@ pub async fn compact_event_storage_postgres(
                   WHERE sequence = $5",
             )
             .bind(encoded)
-            .bind(import_status)
-            .bind(delete_reason)
-            .bind(download_id)
+            .bind(projections.import_status)
+            .bind(projections.media_file_delete_reason)
+            .bind(projections.download_id)
             .bind(sequence)
             .execute(&mut **tx)
             .await
@@ -242,11 +238,7 @@ pub async fn compact_event_storage_postgres(
                 .try_get::<Option<Vec<u8>>, _>("explanation_json")
                 .map_err(repo_error)?
                 .as_deref()
-                .map(encode_release_explanation)
-                .transpose()
-                .map_err(|error| {
-                    AppError::Repository(format!("failed to encode release decision {id}: {error}"))
-                })?;
+                .and_then(|value| encode_release_explanation_or_null(&id, value));
             sqlx::query("UPDATE release_decisions SET explanation_json = $1 WHERE id = $2")
                 .bind(explanation)
                 .bind(&id)
@@ -257,31 +249,6 @@ pub async fn compact_event_storage_postgres(
         }
     }
     Ok(())
-}
-
-fn projections(
-    event_type: &str,
-    payload: &Value,
-) -> (Option<String>, Option<String>, Option<String>) {
-    let data = payload.get("data");
-    let field = |name: &str| {
-        data.and_then(|value| value.get(name))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    };
-    let import_status = (event_type == "import_rejected")
-        .then(|| field("status"))
-        .flatten();
-    let delete_reason = (event_type == "media_file_deleted")
-        .then(|| field("reason"))
-        .flatten();
-    let download_id = matches!(
-        event_type,
-        "release_grabbed" | "download_failed" | "release_blocklisted"
-    )
-    .then(|| field("download_id"))
-    .flatten();
-    (import_status, delete_reason, download_id)
 }
 
 fn encode_release_explanation(legacy: &[u8]) -> Result<Vec<u8>, String> {
@@ -308,6 +275,111 @@ fn encode_release_explanation(legacy: &[u8]) -> Result<Vec<u8>, String> {
     Ok(encoded)
 }
 
+fn encode_release_explanation_or_null(id: &str, legacy: &[u8]) -> Option<Vec<u8>> {
+    match encode_release_explanation(legacy) {
+        Ok(encoded) => Some(encoded),
+        Err(error) => {
+            tracing::warn!(
+                decision_id = id,
+                error = %error,
+                "discarding invalid release-decision explanation during event-storage migration"
+            );
+            None
+        }
+    }
+}
+
 fn repo_error(error: impl std::fmt::Display) -> AppError {
     AppError::Repository(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::{Row, sqlite::SqlitePoolOptions};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn sqlite_migration_keeps_decisions_and_nulls_invalid_explanations() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE domain_events_legacy_0197 (
+                sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL, occurred_at TEXT NOT NULL,
+                actor_user_id TEXT, title_id TEXT, facet TEXT, correlation_id TEXT,
+                causation_id TEXT, schema_version INTEGER NOT NULL, stream_kind TEXT NOT NULL,
+                stream_id TEXT, event_type TEXT NOT NULL, payload_json TEXT NOT NULL,
+                actor_kind TEXT NOT NULL, actor_display_name TEXT NOT NULL
+             );
+             CREATE TABLE domain_events (
+                sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL, occurred_at TEXT NOT NULL,
+                actor_user_id TEXT, title_id TEXT, facet TEXT, correlation_id TEXT,
+                causation_id TEXT, schema_version INTEGER NOT NULL, stream_kind TEXT NOT NULL,
+                stream_id TEXT, event_type TEXT NOT NULL, payload_json BLOB NOT NULL,
+                actor_kind TEXT NOT NULL, actor_display_name TEXT NOT NULL,
+                import_status TEXT, media_file_delete_reason TEXT, download_id TEXT
+             );
+             CREATE TABLE release_decisions_legacy_0197 (
+                id TEXT PRIMARY KEY, wanted_item_id TEXT NOT NULL, title_id TEXT NOT NULL,
+                release_title TEXT NOT NULL, release_url TEXT, release_size_bytes INTEGER,
+                decision_code TEXT NOT NULL, candidate_score INTEGER NOT NULL,
+                current_score INTEGER, score_delta INTEGER, explanation_json TEXT,
+                created_at TEXT NOT NULL
+             );
+             CREATE TABLE release_decisions (
+                id TEXT PRIMARY KEY, wanted_item_id TEXT NOT NULL, title_id TEXT NOT NULL,
+                release_title TEXT NOT NULL, release_url TEXT, release_size_bytes INTEGER,
+                decision_code TEXT NOT NULL, candidate_score INTEGER NOT NULL,
+                current_score INTEGER, score_delta INTEGER, explanation_json BLOB,
+                created_at TEXT NOT NULL
+             );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let oversized = serde_json::to_string(&"x".repeat(RELEASE_EXPLANATION_MAX_BYTES))
+            .expect("oversized explanation should serialize");
+        for (id, explanation) in [
+            ("a-valid", "{\"eligible\":true}".to_string()),
+            ("b-invalid", "not-json".to_string()),
+            ("c-oversized", oversized),
+        ] {
+            sqlx::query(
+                "INSERT INTO release_decisions_legacy_0197 (
+                    id, wanted_item_id, title_id, release_title, decision_code,
+                    candidate_score, explanation_json, created_at
+                 ) VALUES (?1, 'wanted-1', 'title-1', 'release', 'eligible', 1, ?2,
+                           '2026-08-29T00:00:00Z')",
+            )
+            .bind(id)
+            .bind(explanation)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let mut tx = pool.begin().await.unwrap();
+        compact_event_storage_sqlite(&mut tx).await.unwrap();
+        let rows = sqlx::query("SELECT id, explanation_json FROM release_decisions ORDER BY id")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        let valid: Option<Vec<u8>> = rows[0].try_get("explanation_json").unwrap();
+        assert_eq!(
+            valid.as_deref().and_then(|value| value.first()).copied(),
+            Some(1)
+        );
+        for row in &rows[1..] {
+            assert_eq!(
+                row.try_get::<Option<Vec<u8>>, _>("explanation_json")
+                    .unwrap(),
+                None
+            );
+        }
+    }
 }

@@ -89,8 +89,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    mod dictionary_training {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/support/release_decision_dictionary_training.rs"
+        ));
+    }
+
     const EXPECTED_DICTIONARY_BLAKE3: &str =
-        "85d1fa8ea9252131cedab61e20ee5b6b2e76072e5ec2a6c45db3ae03413ecc60";
+        "3c837a8f2ff701b4ba29266fd4a3f2e7e0648f4265def397cd253fd44a0af084";
 
     fn representative_explanation() -> String {
         serde_json::to_string(&json!({
@@ -143,6 +150,22 @@ mod tests {
         assert_eq!(
             blake3::hash(DICTIONARY_V1).to_hex().as_str(),
             EXPECTED_DICTIONARY_BLAKE3
+        );
+    }
+
+    #[test]
+    fn dictionary_regenerates_exactly_and_improves_held_out_compression() {
+        let trained = dictionary_training::train_dictionary().unwrap();
+        assert_eq!(trained.bytes, DICTIONARY_V1);
+        assert_eq!(trained.training_samples, 807);
+        assert_eq!(trained.held_out.len(), 74);
+        let (raw, plain, dictionary) =
+            dictionary_training::held_out_compression_totals(&trained.bytes, &trained.held_out)
+                .unwrap();
+        assert!(raw > 0);
+        assert!(
+            dictionary < plain,
+            "dictionary compression should beat plain level-3 zstd across held-out samples ({dictionary} >= {plain})"
         );
     }
 

@@ -10,6 +10,13 @@ const DICTIONARY_V1: &[u8] = include_bytes!("domain_event_payload_v1.dict");
 #[derive(Debug)]
 pub struct DomainEventPayloadCodecError(String);
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DomainEventProjections {
+    pub import_status: Option<String>,
+    pub media_file_delete_reason: Option<String>,
+    pub download_id: Option<String>,
+}
+
 impl fmt::Display for DomainEventPayloadCodecError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -17,6 +24,33 @@ impl fmt::Display for DomainEventPayloadCodecError {
 }
 
 impl std::error::Error for DomainEventPayloadCodecError {}
+
+pub fn derive_domain_event_projections(
+    event_type: &str,
+    payload: &Value,
+) -> DomainEventProjections {
+    let data = payload.get("data");
+    let field = |name: &str| {
+        data.and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+
+    DomainEventProjections {
+        import_status: (event_type == "import_rejected")
+            .then(|| field("status"))
+            .flatten(),
+        media_file_delete_reason: (event_type == "media_file_deleted")
+            .then(|| field("reason"))
+            .flatten(),
+        download_id: matches!(
+            event_type,
+            "release_grabbed" | "download_failed" | "release_blocklisted"
+        )
+        .then(|| field("download_id"))
+        .flatten(),
+    }
+}
 
 pub fn encode_domain_event_payload(
     payload: &Value,
@@ -87,13 +121,64 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    mod dictionary_training {
+        use crate as scryer_infrastructure_sql;
+
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/support/domain_event_dictionary_training.rs"
+        ));
+    }
+
     #[test]
     fn dictionary_identity_is_pinned() {
         assert_eq!(DICTIONARY_V1.len(), 8 * 1024);
         assert_eq!(
             blake3::hash(DICTIONARY_V1).to_hex().as_str(),
-            "bd7e42c8044b81ba9b3415e59f412d2c2a1097fab0786eb5e5e2d163802a407b"
+            "9ea5863fd17f94ff47c512f32c113bf15df343621d61d1ab88acb99a6e57e48d"
         );
+    }
+
+    #[test]
+    fn dictionary_regenerates_exactly_and_improves_held_out_compression() {
+        let trained = dictionary_training::train_dictionary().unwrap();
+        assert_eq!(trained.bytes, DICTIONARY_V1);
+        assert_eq!(trained.training_samples, 4_152);
+        assert_eq!(trained.held_out.len(), 14);
+        let (raw, plain, dictionary) =
+            dictionary_training::held_out_compression_totals(&trained.bytes, &trained.held_out)
+                .unwrap();
+        assert!(raw > 0);
+        assert!(
+            dictionary < plain,
+            "dictionary compression should beat plain level-3 zstd across held-out samples ({dictionary} >= {plain})"
+        );
+    }
+
+    #[test]
+    fn projection_derivation_covers_queryable_event_fields() {
+        let import = derive_domain_event_projections(
+            "import_rejected",
+            &json!({"data": {"status": "failed"}}),
+        );
+        assert_eq!(import.import_status.as_deref(), Some("failed"));
+
+        let deletion = derive_domain_event_projections(
+            "media_file_deleted",
+            &json!({"data": {"reason": "upgrade_cleanup"}}),
+        );
+        assert_eq!(
+            deletion.media_file_delete_reason.as_deref(),
+            Some("upgrade_cleanup")
+        );
+
+        for event_type in ["release_grabbed", "download_failed", "release_blocklisted"] {
+            let projection = derive_domain_event_projections(
+                event_type,
+                &json!({"data": {"download_id": "download-1"}}),
+            );
+            assert_eq!(projection.download_id.as_deref(), Some("download-1"));
+        }
     }
 
     #[test]

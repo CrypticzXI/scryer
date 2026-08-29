@@ -86,6 +86,32 @@ pub fn load_sanitized_jsonl(path: &Path) -> Result<Vec<Vec<u8>>, String> {
     Ok(samples)
 }
 
+pub struct SanitizedCorpusSplit {
+    pub training: Vec<Vec<u8>>,
+    pub held_out: Vec<Vec<u8>>,
+}
+
+pub fn split_sanitized_samples(mut samples: Vec<Vec<u8>>) -> Result<SanitizedCorpusSplit, String> {
+    samples.sort_by(|left, right| {
+        stable_content_hash(left)
+            .cmp(&stable_content_hash(right))
+            .then_with(|| left.cmp(right))
+    });
+    let training_len = samples.len() * 4 / 5;
+    if training_len == 0 || training_len == samples.len() {
+        return Err("sanitized corpus content-hash split produced an empty partition".to_string());
+    }
+    let held_out = samples.split_off(training_len);
+    let training = samples;
+    Ok(SanitizedCorpusSplit { training, held_out })
+}
+
+fn stable_content_hash(sample: &[u8]) -> u64 {
+    sample.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 fn audit_sanitized_value(value: &Value, path: &str) -> Result<(), String> {
     match value {
         Value::Null | Value::Bool(_) => Ok(()),
@@ -164,6 +190,20 @@ mod tests {
             "items": [true, null, "torrent"]
         });
         audit_sanitized_value(&value, "$").unwrap();
+    }
+
+    #[test]
+    fn content_hash_split_is_exact_and_input_order_independent() {
+        let samples = (0..10)
+            .map(|index| format!("sample-{index}").into_bytes())
+            .collect::<Vec<_>>();
+        let expected = split_sanitized_samples(samples.clone()).unwrap();
+        let actual = split_sanitized_samples(samples.into_iter().rev().collect()).unwrap();
+
+        assert_eq!(expected.training.len(), 8);
+        assert_eq!(expected.held_out.len(), 2);
+        assert_eq!(actual.training, expected.training);
+        assert_eq!(actual.held_out, expected.held_out);
     }
 
     #[test]

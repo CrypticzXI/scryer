@@ -4,7 +4,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Utc};
 use scryer_application::{AppError, AppResult};
 use scryer_infrastructure_library::media::libraries::state_store::encode_release_decision_explanation;
-use scryer_infrastructure_sql::domain_event_payload::encode_domain_event_payload;
+use scryer_infrastructure_sql::domain_event_payload::{
+    derive_domain_event_projections, encode_domain_event_payload,
+};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,34 +115,25 @@ fn normalize_domain_event_import_object(object: &mut JsonMap<String, JsonValue>)
         .and_then(JsonValue::as_str)
         .unwrap_or_default()
         .to_string();
-    let field = |name: &str| {
-        payload
-            .get("data")
-            .and_then(|data| data.get(name))
-            .and_then(JsonValue::as_str)
-            .map(str::to_string)
-    };
-    if event_type == "import_rejected" {
-        object.insert(
-            "import_status".to_string(),
-            field("status").map_or(JsonValue::Null, JsonValue::String),
-        );
-    }
-    if event_type == "media_file_deleted" {
-        object.insert(
-            "media_file_delete_reason".to_string(),
-            field("reason").map_or(JsonValue::Null, JsonValue::String),
-        );
-    }
-    if matches!(
-        event_type.as_str(),
-        "release_grabbed" | "download_failed" | "release_blocklisted"
-    ) {
-        object.insert(
-            "download_id".to_string(),
-            field("download_id").map_or(JsonValue::Null, JsonValue::String),
-        );
-    }
+    let projections = derive_domain_event_projections(&event_type, &payload);
+    object.insert(
+        "import_status".to_string(),
+        projections
+            .import_status
+            .map_or(JsonValue::Null, JsonValue::String),
+    );
+    object.insert(
+        "media_file_delete_reason".to_string(),
+        projections
+            .media_file_delete_reason
+            .map_or(JsonValue::Null, JsonValue::String),
+    );
+    object.insert(
+        "download_id".to_string(),
+        projections
+            .download_id
+            .map_or(JsonValue::Null, JsonValue::String),
+    );
     object.insert("payload_json".to_string(), blob_value(&encoded));
     Ok(())
 }
@@ -154,20 +147,42 @@ fn normalize_release_decision_import_object(
     if explanation.is_null() || is_blob_marker(&explanation) {
         return Ok(());
     }
-    let explanation = legacy_json_value(explanation, "release_decisions.explanation_json")?;
-    let compact = serde_json::to_string(&explanation).map_err(|error| {
-        AppError::Validation(format!(
-            "failed to compact restored release explanation: {error}"
-        ))
-    })?;
-    let encoded = encode_release_decision_explanation(Some(&compact))
-        .map_err(|error| {
+    let decision_id = object
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("<unknown>");
+    let encoded = (|| -> AppResult<Vec<u8>> {
+        let explanation = legacy_json_value(explanation, "release_decisions.explanation_json")?;
+        let compact = serde_json::to_string(&explanation).map_err(|error| {
             AppError::Validation(format!(
-                "failed to encode restored release explanation: {error}"
+                "failed to compact restored release explanation: {error}"
             ))
-        })?
-        .expect("present release explanation should encode as present");
-    object.insert("explanation_json".to_string(), blob_value(&encoded));
+        })?;
+        encode_release_decision_explanation(Some(&compact))
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "failed to encode restored release explanation: {error}"
+                ))
+            })?
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "present restored release explanation encoded as null".to_string(),
+                )
+            })
+    })();
+    match encoded {
+        Ok(encoded) => {
+            object.insert("explanation_json".to_string(), blob_value(&encoded));
+        }
+        Err(error) => {
+            tracing::warn!(
+                decision_id,
+                error = %error,
+                "discarding invalid release-decision explanation during backup restore"
+            );
+            object.insert("explanation_json".to_string(), JsonValue::Null);
+        }
+    }
     Ok(())
 }
 
@@ -959,6 +974,59 @@ mod tests {
             serde_json::from_str::<JsonValue>(&decoded).unwrap(),
             explanation
         );
+    }
+
+    #[test]
+    fn invalid_and_oversized_release_explanations_restore_as_null() {
+        for explanation in [
+            JsonValue::String("not-json".to_string()),
+            JsonValue::String(
+                serde_json::to_string(&"x".repeat(70 * 1024))
+                    .expect("oversized explanation should serialize"),
+            ),
+        ] {
+            let mut object = JsonMap::from_iter([
+                (
+                    "id".to_string(),
+                    JsonValue::String("decision-1".to_string()),
+                ),
+                ("explanation_json".to_string(), explanation),
+            ]);
+
+            normalize_release_decision_import_object(&mut object)
+                .expect("invalid diagnostics must not abort restore");
+
+            assert_eq!(object.get("explanation_json"), Some(&JsonValue::Null));
+        }
+    }
+
+    #[test]
+    fn binary_and_null_release_explanations_remain_unchanged() {
+        for explanation in [
+            JsonValue::Null,
+            json!({"__scryer_type": "blob", "base64": "AQIDBA=="}),
+        ] {
+            let mut object =
+                JsonMap::from_iter([("explanation_json".to_string(), explanation.clone())]);
+            normalize_release_decision_import_object(&mut object).unwrap();
+            assert_eq!(object.get("explanation_json"), Some(&explanation));
+        }
+    }
+
+    #[test]
+    fn invalid_domain_event_payloads_still_abort_restore() {
+        let mut object = JsonMap::from_iter([
+            (
+                "event_type".to_string(),
+                JsonValue::String("title_updated".to_string()),
+            ),
+            (
+                "payload_json".to_string(),
+                JsonValue::String("not-json".to_string()),
+            ),
+        ]);
+
+        assert!(normalize_domain_event_import_object(&mut object).is_err());
     }
 
     fn blob_marker_bytes(value: &JsonValue) -> Vec<u8> {

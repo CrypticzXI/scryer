@@ -10,13 +10,13 @@ use scryer_application::{
 };
 use scryer_domain::download_identity::DownloadId;
 use scryer_domain::{
-    DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventPayload, DomainEventStream,
-    DomainEventType, DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord,
-    ImportStatus, ImportTransferPhase, ImportType, MediaFacet, MediaFileDeletedReason,
-    NewDomainEvent, TitleHistoryEventType,
+    DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventStream, DomainEventType,
+    DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,
+    ImportTransferPhase, ImportType, MediaFacet, MediaFileDeletedReason, NewDomainEvent,
+    TitleHistoryEventType,
 };
 use scryer_infrastructure_sql::domain_event_payload::{
-    decode_domain_event_payload, encode_domain_event_payload,
+    decode_domain_event_payload, derive_domain_event_projections, encode_domain_event_payload,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{Row, types::Json};
@@ -65,8 +65,7 @@ pub async fn append_domain_events(
                         event.event_id
                     ))
                 })?;
-                let (import_status, media_file_delete_reason, download_id) =
-                    domain_event_projections(&event.payload);
+                let projections = derive_domain_event_projections(event_type, &payload);
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "INSERT INTO domain_events (
@@ -92,9 +91,9 @@ pub async fn append_domain_events(
                         SqlArg::OptText(event.stream.identifier().map(str::to_string)),
                         SqlArg::Text(event.payload.event_type().as_str().to_string()),
                         SqlArg::OptBytes(Some(encoded_payload)),
-                        SqlArg::OptText(import_status),
-                        SqlArg::OptText(media_file_delete_reason),
-                        SqlArg::OptText(download_id),
+                        SqlArg::OptText(projections.import_status),
+                        SqlArg::OptText(projections.media_file_delete_reason),
+                        SqlArg::OptText(projections.download_id),
                     ],
                 )
                 .await?;
@@ -123,8 +122,7 @@ pub async fn append_domain_event_tx(
             event.event_id
         ))
     })?;
-    let (import_status, media_file_delete_reason, download_id) =
-        domain_event_projections(&event.payload);
+    let projections = derive_domain_event_projections(event_type, &payload);
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO domain_events (
@@ -148,9 +146,9 @@ pub async fn append_domain_event_tx(
             SqlArg::OptText(event.stream.identifier().map(str::to_string)),
             SqlArg::Text(event.payload.event_type().as_str().to_string()),
             SqlArg::OptBytes(Some(encoded_payload)),
-            SqlArg::OptText(import_status),
-            SqlArg::OptText(media_file_delete_reason),
-            SqlArg::OptText(download_id),
+            SqlArg::OptText(projections.import_status),
+            SqlArg::OptText(projections.media_file_delete_reason),
+            SqlArg::OptText(projections.download_id),
         ],
     )
     .await?;
@@ -158,26 +156,6 @@ pub async fn append_domain_event_tx(
     fetch_domain_event_by_event_id(SqlExec::Tx(tx), &event.event_id)
         .await?
         .ok_or_else(|| AppError::Repository("failed to reload inserted domain event".into()))
-}
-
-fn domain_event_projections(
-    payload: &DomainEventPayload,
-) -> (Option<String>, Option<String>, Option<String>) {
-    let import_status = match payload {
-        DomainEventPayload::ImportRejected(data) => Some(data.status.as_str().to_string()),
-        _ => None,
-    };
-    let media_file_delete_reason = match payload {
-        DomainEventPayload::MediaFileDeleted(data) => Some(data.reason.as_str().to_string()),
-        _ => None,
-    };
-    let download_id = match payload {
-        DomainEventPayload::ReleaseGrabbed(data) => data.download_id.clone(),
-        DomainEventPayload::DownloadFailed(data) => data.download_id.clone(),
-        DomainEventPayload::ReleaseBlocklisted(data) => data.download_id.clone(),
-        _ => None,
-    };
-    (import_status, media_file_delete_reason, download_id)
 }
 
 pub async fn commit_successful_grab_tx(
@@ -752,12 +730,11 @@ pub fn import_request_insert_active_download_id_sql(tx: &SqlTx<'_>) -> String {
 }
 
 pub fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
-    let conflict_clause = match tx {
-        SqlTx::Sqlite(_) => "ON CONFLICT DO UPDATE",
-        SqlTx::Postgres(_) => {
-            "ON CONFLICT ((COALESCE(source_client_id, '')), source_system, source_ref, import_type) WHERE download_id IS NULL DO UPDATE"
-        }
-    };
+    import_request_upsert_sql_for_backend(matches!(tx, SqlTx::Postgres(_)))
+}
+
+fn import_request_upsert_sql_for_backend(is_postgres: bool) -> String {
+    let conflict_clause = import_request_upsert_conflict_clause(is_postgres);
 
     format!(
         "{} {conflict_clause} SET
@@ -767,7 +744,7 @@ pub fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
             rename_plan_json = excluded.rename_plan_json,
             result_json = NULL,
             download_id = excluded.download_id,
-            canonical_download_id = COALESCE(excluded.canonical_download_id, canonical_download_id),
+            canonical_download_id = COALESCE(excluded.canonical_download_id, imports.canonical_download_id),
             import_transfer_phase = NULL,
             import_transfer_bytes = NULL,
             import_transfer_total_bytes = NULL,
@@ -778,6 +755,14 @@ pub fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
             updated_at = excluded.updated_at",
         import_request_insert_sql()
     )
+}
+
+fn import_request_upsert_conflict_clause(is_postgres: bool) -> &'static str {
+    if is_postgres {
+        "ON CONFLICT ((COALESCE(source_client_id, '')), source_system, source_ref, import_type) WHERE download_id IS NULL DO UPDATE"
+    } else {
+        "ON CONFLICT DO UPDATE"
+    }
 }
 
 pub async fn recover_stale_processing_imports(
@@ -1912,5 +1897,14 @@ mod tests {
         assert!(sql.contains("sequence > {}"));
         assert!(sql.contains("ORDER BY sequence ASC"));
         assert_eq!(args.len(), 4);
+    }
+
+    #[test]
+    fn postgres_import_request_upsert_qualifies_target_canonical_download_id() {
+        let sql = import_request_upsert_sql_for_backend(true);
+
+        assert!(sql.contains(
+            "canonical_download_id = COALESCE(excluded.canonical_download_id, imports.canonical_download_id)"
+        ));
     }
 }
