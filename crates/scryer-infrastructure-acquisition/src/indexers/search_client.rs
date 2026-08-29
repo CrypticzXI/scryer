@@ -458,6 +458,21 @@ fn sanitize_indexer_error_message(message: &str) -> String {
 }
 
 const SEARCH_CANDIDATE_REUSE_HOURS: i64 = 24;
+
+/// Whether this search pass may be served from the persisted candidate corpus.
+///
+/// Reuse requires all three: Auto mode (Interactive never reused), a learning
+/// context (no context means no diagnostics to rehydrate from), and the
+/// context's own consent — which only the background convergence lanes give.
+/// Operator-triggered Auto searches leave `candidate_reuse_allowed` false and
+/// always fire the indexer live.
+fn candidate_reuse_permitted(
+    mode: SearchMode,
+    learning_context: Option<&IndexerSearchLearningContext>,
+) -> bool {
+    mode == SearchMode::Auto
+        && learning_context.is_some_and(|context| context.candidate_reuse_allowed)
+}
 const SEARCH_CANDIDATE_RETENTION_DAYS: i64 = 1;
 const SEARCH_RUN_RETENTION_DAYS: i64 = 90;
 const SEARCH_DIAGNOSTIC_CLEANUP_LIMIT: u32 = 500;
@@ -4267,7 +4282,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                 episode,
                 absolute_episode,
             );
-            let reusable_strategies = if mode == SearchMode::Auto {
+            // Corpus reuse is opt-in per pass: only the background convergence
+            // lanes mark their learning context reusable. An operator-triggered
+            // Auto search (queue-best-release, the UI search buttons) fires the
+            // indexer live — a corpus snapshot persisted before a new release
+            // appeared would hide it for the whole reuse window, which is how
+            // an explicit upgrade search stopped seeing a just-registered
+            // PROPER. Interactive searches never reused.
+            let reusable_strategies = if candidate_reuse_permitted(mode, learning_context.as_ref())
+            {
                 match search_diagnostics.as_ref() {
                     Some(diagnostics) => diagnostics.reusable_strategies(config).await,
                     None => HashMap::new(),
@@ -10632,6 +10655,43 @@ mod tests {
         );
     }
 
+    /// Corpus reuse needs Auto mode AND the context's explicit consent, which
+    /// only the background convergence lanes give. An operator-triggered Auto
+    /// search (no consent) and every Interactive search fire the indexer live.
+    #[test]
+    fn candidate_reuse_requires_auto_mode_and_a_consenting_context() {
+        let background = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "series".into(),
+            subject_kind: ReleaseSearchSubjectKind::Episode,
+            search_session_id: "session".into(),
+            background_value: Some(0.5),
+            candidate_reuse_allowed: true,
+        };
+        let operator = IndexerSearchLearningContext {
+            candidate_reuse_allowed: false,
+            background_value: None,
+            ..background.clone()
+        };
+
+        assert!(candidate_reuse_permitted(
+            SearchMode::Auto,
+            Some(&background)
+        ));
+        assert!(
+            !candidate_reuse_permitted(SearchMode::Auto, Some(&operator)),
+            "an explicit operator search must fire live"
+        );
+        assert!(
+            !candidate_reuse_permitted(SearchMode::Auto, None),
+            "no context, nothing to rehydrate from"
+        );
+        assert!(
+            !candidate_reuse_permitted(SearchMode::Interactive, Some(&background)),
+            "interactive searches never reused"
+        );
+    }
+
     #[tokio::test]
     async fn learned_outcome_suppresses_empty_id_after_working_alternative() {
         let repo: StdArc<dyn IndexerSearchLearningRepository> =
@@ -10642,6 +10702,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         record_strategy_learning_outcome(
@@ -10694,6 +10755,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         for _ in 0..LEARNED_EMPTY_SUPPRESSION_THRESHOLD {
@@ -10755,6 +10817,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         record_strategy_learning_outcome(
@@ -10795,6 +10858,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Title,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         let result = <MultiIndexerSearchClient as IndexerClient>::search(
@@ -10851,6 +10915,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Title,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         let result = <MultiIndexerSearchClient as IndexerClient>::search(
@@ -10907,6 +10972,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         let response = <MultiIndexerSearchClient as IndexerClient>::search(

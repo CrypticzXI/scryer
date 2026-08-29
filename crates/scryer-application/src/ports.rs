@@ -3300,6 +3300,18 @@ pub struct IndexerSearchLearningContext {
     /// leave it `None`, which resolves to the neutral value. Plan 112 owns how
     /// the scheduler acts on the resulting value under quota pressure.
     pub background_value: Option<f64>,
+    /// Whether this pass may be served from the persisted search-candidate
+    /// corpus instead of firing the indexer.
+    ///
+    /// Reuse is a **background-lane** economy: convergence cycles walk the same
+    /// scopes repeatedly and a candidate set persisted hours ago is as good as
+    /// a fresh one for them. An operator-triggered search is the opposite — the
+    /// user is asking "what is on the indexer *now*", usually seconds after a
+    /// release they expect to see appeared. Serving that from a corpus snapshot
+    /// taken before the release existed reports "nothing new" for up to the
+    /// whole reuse window, which is how an explicit upgrade search stopped
+    /// finding a PROPER registered moments earlier.
+    pub candidate_reuse_allowed: bool,
 }
 
 #[derive(Debug, Clone)]

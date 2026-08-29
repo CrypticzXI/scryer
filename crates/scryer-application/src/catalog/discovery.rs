@@ -1311,6 +1311,13 @@ impl AppUseCase {
                 // The convergence value hint rides the Auto background context so
                 // the scheduler can lane-rank this scope.
                 background_value,
+                // Only the background convergence lanes set a value hint, and
+                // only they may be served from the persisted candidate corpus.
+                // An explicit operator search (queue-best-release, the UI search
+                // buttons) must fire the indexer live: the user is asking what
+                // exists *now*, and a corpus snapshot persisted before a new
+                // release appeared would hide it for the whole reuse window.
+                candidate_reuse_allowed: background_value.is_some(),
             })
         } else {
             None
