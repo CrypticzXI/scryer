@@ -703,15 +703,19 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "indexer_search_candidate_url_credentials",
-        classification: BackupTableClassification::ResetOnRestore,
-    },
-    BackupTableCatalogEntry {
-        table: "indexer_search_candidate_values",
-        classification: BackupTableClassification::ResetOnRestore,
-    },
-    BackupTableCatalogEntry {
         table: "indexer_search_candidates",
+        classification: BackupTableClassification::ResetOnRestore,
+    },
+    BackupTableCatalogEntry {
+        table: "indexer_search_candidate_source_values",
+        classification: BackupTableClassification::ResetOnRestore,
+    },
+    BackupTableCatalogEntry {
+        table: "indexer_search_candidate_sources",
+        classification: BackupTableClassification::ResetOnRestore,
+    },
+    BackupTableCatalogEntry {
+        table: "indexer_search_run_candidate_sources",
         classification: BackupTableClassification::ResetOnRestore,
     },
     BackupTableCatalogEntry {
@@ -2348,8 +2352,6 @@ mod tests {
                         | "title_images"
                         | "title_image_variants"
                         | "title_image_blobs"
-                        | "indexer_search_candidate_url_credentials"
-                        | "indexer_search_candidate_values"
                         | "indexer_search_candidates"
                         | "indexer_search_runs"
                 )
