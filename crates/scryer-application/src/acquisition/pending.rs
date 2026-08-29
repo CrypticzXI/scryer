@@ -1062,7 +1062,7 @@ impl AppUseCase {
             );
             return Ok(PendingGrabOutcome::Rejected);
         }
-        let candidate_runtime_minutes = facts.runtime_minutes;
+        let candidate_runtime_minutes = facts.size_basis.total_runtime_minutes;
         let candidate_score = facts.score;
 
         let mut admission = self

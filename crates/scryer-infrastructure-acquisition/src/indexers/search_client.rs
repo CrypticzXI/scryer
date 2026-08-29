@@ -458,6 +458,21 @@ fn sanitize_indexer_error_message(message: &str) -> String {
 }
 
 const SEARCH_CANDIDATE_REUSE_HOURS: i64 = 24;
+
+/// Whether this search pass may be served from the persisted candidate corpus.
+///
+/// Reuse requires all three: Auto mode (Interactive never reused), a learning
+/// context (no context means no diagnostics to rehydrate from), and the
+/// context's own consent — which only the background convergence lanes give.
+/// Operator-triggered Auto searches leave `candidate_reuse_allowed` false and
+/// always fire the indexer live.
+fn candidate_reuse_permitted(
+    mode: SearchMode,
+    learning_context: Option<&IndexerSearchLearningContext>,
+) -> bool {
+    mode == SearchMode::Auto
+        && learning_context.is_some_and(|context| context.candidate_reuse_allowed)
+}
 const SEARCH_CANDIDATE_RETENTION_DAYS: i64 = 1;
 const SEARCH_RUN_RETENTION_DAYS: i64 = 90;
 const SEARCH_DIAGNOSTIC_CLEANUP_LIMIT: u32 = 500;
@@ -2118,18 +2133,25 @@ impl MultiIndexerSearchClient {
         now: DateTime<Utc>,
         activity: SchedulerRssActivity,
     ) -> RssFreshnessContext {
-        const RSS_TARGET_INTERVAL_SECS: i64 = 15 * 60;
+        // The first poll of an indexer has no persisted cadence entry yet, so
+        // the phased window, the safe-poll time and the freshness risk are all
+        // derived from this interval. It has to honour
+        // `SCRYER_RSS_TARGET_INTERVAL_SECS` too, or the override would not take
+        // effect until after a full default-length window had already elapsed.
+        let rss_target_interval_secs = crate::upstream_scheduler::rss_target_interval()
+            .as_secs()
+            .clamp(1, i64::MAX as u64) as i64;
         let last_successful_poll_at = activity.last_successful_poll_at;
         let last_attempt_at = activity.last_attempt_at;
-        let phase = stable_phase_seconds(&config.id, RSS_TARGET_INTERVAL_SECS as u64) as i64;
+        let phase = stable_phase_seconds(&config.id, rss_target_interval_secs as u64) as i64;
         let timestamp = now.timestamp();
-        let window_start = timestamp - timestamp.rem_euclid(RSS_TARGET_INTERVAL_SECS);
+        let window_start = timestamp - timestamp.rem_euclid(rss_target_interval_secs);
         let phased_safe_poll_at =
             DateTime::<Utc>::from_timestamp(window_start + phase, 0).unwrap_or(now);
         let target_interval = activity
             .target_interval
             .and_then(|duration| chrono::Duration::from_std(duration).ok())
-            .unwrap_or_else(|| Duration::seconds(RSS_TARGET_INTERVAL_SECS));
+            .unwrap_or_else(|| Duration::seconds(rss_target_interval_secs));
         let latest_safe_poll_at = last_successful_poll_at
             .map(|last_activity| last_activity + target_interval)
             .or(activity.latest_safe_poll_at)
@@ -2138,14 +2160,14 @@ impl MultiIndexerSearchClient {
             last_successful_poll_at
                 .map(|last_activity| {
                     let elapsed = (now - last_activity).num_seconds().max(0) as f64;
-                    (elapsed / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
+                    (elapsed / rss_target_interval_secs as f64).clamp(0.0, 1.0)
                 })
                 .unwrap_or_else(|| {
                     if now >= latest_safe_poll_at {
                         1.0
                     } else {
                         let elapsed = timestamp - window_start;
-                        (elapsed as f64 / RSS_TARGET_INTERVAL_SECS as f64).clamp(0.0, 1.0)
+                        (elapsed as f64 / rss_target_interval_secs as f64).clamp(0.0, 1.0)
                     }
                 })
         });
@@ -2155,7 +2177,7 @@ impl MultiIndexerSearchClient {
             last_attempt_at,
             target_interval: activity
                 .target_interval
-                .unwrap_or_else(|| std::time::Duration::from_secs(RSS_TARGET_INTERVAL_SECS as u64)),
+                .unwrap_or_else(|| std::time::Duration::from_secs(rss_target_interval_secs as u64)),
             latest_safe_poll_at,
             estimated_feed_depth: activity.estimated_feed_depth,
             freshness_risk,
@@ -4260,7 +4282,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                 episode,
                 absolute_episode,
             );
-            let reusable_strategies = if mode == SearchMode::Auto {
+            // Corpus reuse is opt-in per pass: only the background convergence
+            // lanes mark their learning context reusable. An operator-triggered
+            // Auto search (queue-best-release, the UI search buttons) fires the
+            // indexer live — a corpus snapshot persisted before a new release
+            // appeared would hide it for the whole reuse window, which is how
+            // an explicit upgrade search stopped seeing a just-registered
+            // PROPER. Interactive searches never reused.
+            let reusable_strategies = if candidate_reuse_permitted(mode, learning_context.as_ref())
+            {
                 match search_diagnostics.as_ref() {
                     Some(diagnostics) => diagnostics.reusable_strategies(config).await,
                     None => HashMap::new(),
@@ -10625,6 +10655,43 @@ mod tests {
         );
     }
 
+    /// Corpus reuse needs Auto mode AND the context's explicit consent, which
+    /// only the background convergence lanes give. An operator-triggered Auto
+    /// search (no consent) and every Interactive search fire the indexer live.
+    #[test]
+    fn candidate_reuse_requires_auto_mode_and_a_consenting_context() {
+        let background = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "series".into(),
+            subject_kind: ReleaseSearchSubjectKind::Episode,
+            search_session_id: "session".into(),
+            background_value: Some(0.5),
+            candidate_reuse_allowed: true,
+        };
+        let operator = IndexerSearchLearningContext {
+            candidate_reuse_allowed: false,
+            background_value: None,
+            ..background.clone()
+        };
+
+        assert!(candidate_reuse_permitted(
+            SearchMode::Auto,
+            Some(&background)
+        ));
+        assert!(
+            !candidate_reuse_permitted(SearchMode::Auto, Some(&operator)),
+            "an explicit operator search must fire live"
+        );
+        assert!(
+            !candidate_reuse_permitted(SearchMode::Auto, None),
+            "no context, nothing to rehydrate from"
+        );
+        assert!(
+            !candidate_reuse_permitted(SearchMode::Interactive, Some(&background)),
+            "interactive searches never reused"
+        );
+    }
+
     #[tokio::test]
     async fn learned_outcome_suppresses_empty_id_after_working_alternative() {
         let repo: StdArc<dyn IndexerSearchLearningRepository> =
@@ -10635,6 +10702,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         record_strategy_learning_outcome(
@@ -10687,6 +10755,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         for _ in 0..LEARNED_EMPTY_SUPPRESSION_THRESHOLD {
@@ -10748,6 +10817,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         record_strategy_learning_outcome(
@@ -10788,6 +10858,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Title,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         let result = <MultiIndexerSearchClient as IndexerClient>::search(
@@ -10844,6 +10915,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Title,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         let result = <MultiIndexerSearchClient as IndexerClient>::search(
@@ -10900,6 +10972,7 @@ mod tests {
             subject_kind: ReleaseSearchSubjectKind::Episode,
             search_session_id: "test-session".into(),
             background_value: None,
+            candidate_reuse_allowed: true,
         };
 
         let response = <MultiIndexerSearchClient as IndexerClient>::search(

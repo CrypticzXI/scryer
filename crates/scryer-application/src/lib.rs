@@ -287,7 +287,7 @@ pub use contracts::{
     StagedNzbRef, StorageRootUsage, SubmissionConflictPolicy, SubmissionScope,
     SubmissionScopeConflict, SubtitleGenerationInput, SubtitleProviderConfigUpdate,
     SubtitleProviderValidationResult, SubtitleStreamDetail, SuccessfulGrabCommit,
-    TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
+    TerminalDownloadHistoryRow, TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
 };
 pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{
@@ -395,9 +395,11 @@ pub(crate) use helpers::{
 pub(crate) use helpers::{filesystem_space, filesystem_space_raw};
 pub use image_proxy::image_proxy_source_token;
 pub use indexer_errors::{
-    ClassifiedIndexerError, IndexerErrorRecorder, IndexerErrorRepository, NullIndexerErrorRecorder,
-    UNKNOWN_INDEXER_ERROR_MESSAGE, classify_indexer_http_response, classify_newznab_error_message,
-    indexer_response_content_type, redact_indexer_response_headers, unknown_indexer_error,
+    CONNECTION_TEST_INDEXER_ID, ClassifiedIndexerError, IndexerErrorRecorder,
+    IndexerErrorRepository, NullIndexerErrorRecorder, UNKNOWN_INDEXER_ERROR_MESSAGE,
+    classify_indexer_http_response, classify_newznab_error_message,
+    indexer_error_history_is_persistable, indexer_response_content_type,
+    redact_indexer_response_headers, unknown_indexer_error,
 };
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,

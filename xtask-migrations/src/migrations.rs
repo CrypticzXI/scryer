@@ -964,9 +964,9 @@ ALTER TABLE ONLY public.download_jobs
 
         let checked_in = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../crates/scryer/src/db/postgres/baselines/0140_baseline.sql"),
+                .join("../crates/scryer/src/db/postgres/baselines/0198_baseline.sql"),
         )
-        .expect("PostgreSQL 0140 baseline should be readable");
+        .expect("active PostgreSQL baseline should be readable");
         assert!(checked_in.ends_with(POSTGRES_BUILTIN_BASELINE_SEED_SQL));
     }
 

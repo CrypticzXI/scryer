@@ -5415,13 +5415,15 @@ async fn build_fail_closed_pack_fixture(
     )
 }
 
-/// Sparse stand-in episode file, sized to clear both size gates.
+/// Sparse stand-in episode file, sized like a real episode.
 ///
-/// It used to be 51 MiB, one megabyte over the sample threshold. Size scoring
-/// now also vetoes a file under a tenth of the size its quality and runtime
-/// imply (`size_implausibly_small_for_quality`), and 51 MiB is not a plausible
-/// 45-minute episode at any of the qualities these fixtures name. The file is
-/// sparse, so the byte count is close to free.
+/// It used to be 51 MiB, one megabyte over the import sample threshold — the
+/// only gate a file this small has to clear, now that size scoring penalises
+/// implausible smallness (`size_tiny_for_quality`) instead of refusing it. The
+/// size is kept where it is so these fixtures score in the ordinary part of the
+/// curve rather than at its bottom anchor, where a profile minimum could refuse
+/// them for reasons the tests are not about. The file is sparse, so the byte
+/// count is close to free.
 const PACK_VIDEO_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 fn write_pack_video(dir: &Path, file_name: &str) -> std::path::PathBuf {
@@ -5434,7 +5436,7 @@ fn write_pack_video(dir: &Path, file_name: &str) -> std::path::PathBuf {
         .open(&path)
         .expect("open source video fixture")
         .set_len(PACK_VIDEO_SIZE_BYTES)
-        .expect("size source video above the sample threshold and the minimum-size veto");
+        .expect("size source video above the import sample threshold");
     path
 }
 
@@ -11225,5 +11227,345 @@ async fn a_refused_link_import_blocklists_and_reopens_the_link_scope() {
         decoy.status,
         AcquisitionScopeStatus::Grabbed,
         "the title scope is not this rejection's scope and must be left alone"
+    );
+}
+
+/// A submissions repo that answers only the durable download-history query and
+/// delegates everything else.
+///
+/// The merge tests drive `list_download_history_page`, which reads nothing else
+/// from this port; delegating the rest keeps the double from asserting anything
+/// about calls it is not the subject of.
+struct DurableHistorySubmissionRepo {
+    inner: crate::NullDownloadSubmissionRepository,
+    rows: Vec<crate::TerminalDownloadHistoryRow>,
+}
+
+impl DurableHistorySubmissionRepo {
+    fn new(rows: Vec<crate::TerminalDownloadHistoryRow>) -> Self {
+        Self {
+            inner: crate::NullDownloadSubmissionRepository,
+            rows,
+        }
+    }
+}
+
+#[async_trait]
+impl crate::DownloadSubmissionRepository for DurableHistorySubmissionRepo {
+    async fn list_terminal_download_history_rows(
+        &self,
+        _limit: usize,
+    ) -> AppResult<Vec<crate::TerminalDownloadHistoryRow>> {
+        Ok(self.rows.clone())
+    }
+
+    async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        self.inner.record_submission(submission).await
+    }
+
+    async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        self.inner.record_ambiguous_submission(submission).await
+    }
+
+    async fn record_submission_with_identity(
+        &self,
+        submission: DownloadSubmission,
+        submission_identity: crate::DownloadSubmissionIdentity,
+        seed_goals: Option<crate::PersistedSeedGoals>,
+    ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+        self.inner
+            .record_submission_with_identity(submission, submission_identity, seed_goals)
+            .await
+    }
+
+    async fn find_by_client_item_id(
+        &self,
+        identity: &ClientJobLocator,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        self.inner.find_by_client_item_id(identity).await
+    }
+
+    async fn list_for_client_items(
+        &self,
+        client_items: &[ClientJobLocator],
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        self.inner.list_for_client_items(client_items).await
+    }
+
+    async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
+        self.inner.list_for_title(title_id).await
+    }
+
+    async fn find_by_title_and_request_signature(
+        &self,
+        title_id: &str,
+        request_signature: &str,
+        purpose: crate::DownloadSubmissionPurpose,
+        scope: &crate::SubmissionScope,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        self.inner
+            .find_by_title_and_request_signature(title_id, request_signature, purpose, scope)
+            .await
+    }
+
+    async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+        self.inner.delete_for_title(title_id).await
+    }
+
+    async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()> {
+        self.inner.delete_by_client_item_id(identity).await
+    }
+
+    async fn update_tracked_state(
+        &self,
+        identity: &ClientJobLocator,
+        tracked_state: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .update_tracked_state(identity, tracked_state)
+            .await
+    }
+
+    async fn get_tracked_state(&self, identity: &ClientJobLocator) -> AppResult<Option<String>> {
+        self.inner.get_tracked_state(identity).await
+    }
+}
+
+fn terminal_history_row(
+    download_id: scryer_domain::download_identity::DownloadId,
+    item_id: &str,
+    title_id: Option<&str>,
+    source_title: &str,
+) -> crate::TerminalDownloadHistoryRow {
+    crate::TerminalDownloadHistoryRow {
+        download_id,
+        origin: crate::DownloadOrigin::ScryerSubmission,
+        tracked_state: TrackedDownloadState::Imported.as_str().to_string(),
+        tracked_reason: None,
+        tracked_detail: None,
+        title_id: title_id.map(str::to_string),
+        episode_id: None,
+        facet: Some("movie".to_string()),
+        source_title: Some(source_title.to_string()),
+        client_id: Some("primary".to_string()),
+        client_type: Some("nzbget".to_string()),
+        client_name: Some("NZBGet".to_string()),
+        download_client_item_id: Some(item_id.to_string()),
+        source_provider_name: None,
+        size_bytes: Some(4_096),
+        submitted_at: Some(Utc::now() - chrono::Duration::hours(2)),
+        last_state_at: Some(Utc::now() - chrono::Duration::hours(1)),
+    }
+}
+
+async fn history_app_with_durable_rows(
+    rows: Vec<crate::TerminalDownloadHistoryRow>,
+) -> (AppUseCase, User) {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (mut app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        Arc::new(TrackingPendingReleaseRepo::default()),
+    );
+    app.services.workflow.download_submissions = Arc::new(DurableHistorySubmissionRepo::new(rows));
+    (app, user)
+}
+
+/// rTorrent (among others) evicts finished jobs from its own list, which used
+/// to erase the history entry with it: the projection read only the live
+/// snapshot. The persisted terminal row has to stand in on its own.
+#[tokio::test]
+async fn download_history_keeps_a_terminal_row_the_client_has_evicted() {
+    let evicted_id = scryer_domain::download_identity::DownloadId::new();
+    let (app, user) = history_app_with_durable_rows(vec![terminal_history_row(
+        evicted_id,
+        "evicted-1",
+        None,
+        "Quiet Meridian",
+    )])
+    .await;
+    publish_test_download_queue_snapshot(&app, Vec::new()).await;
+
+    let page = app
+        .list_download_history_page(
+            &user,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("history page should load");
+
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items[0].download_client_item_id, "evicted-1");
+    assert_eq!(page.items[0].state, DownloadQueueState::Completed);
+    assert_eq!(
+        page.items[0].tracked_state,
+        Some(TrackedDownloadState::Imported)
+    );
+    assert_eq!(page.items[0].title_name, "Quiet Meridian");
+    assert_eq!(
+        page.items[0].download_id.as_deref(),
+        Some(evicted_id.to_wire().as_str())
+    );
+}
+
+/// When both sources describe the same download the live row wins: it carries
+/// the client's own progress, delete state and import overlay, none of which
+/// the durable row can reconstruct.
+#[tokio::test]
+async fn download_history_prefers_the_live_row_for_a_download_both_sources_carry() {
+    let shared_id = scryer_domain::download_identity::DownloadId::new();
+    let (app, user) = history_app_with_durable_rows(vec![terminal_history_row(
+        shared_id,
+        "shared-1",
+        None,
+        "Salt and Signal (durable)",
+    )])
+    .await;
+
+    let mut live = queue_history_fixture_item("shared-1", DownloadQueueState::Completed, 9_000);
+    live.title_id = None;
+    live.title_name = "Salt and Signal (live)".to_string();
+    live.download_id = Some(shared_id.to_wire());
+    publish_test_download_queue_snapshot(&app, vec![live]).await;
+
+    let page = app
+        .list_download_history_page(
+            &user,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("history page should load");
+
+    assert_eq!(page.total_count, 1, "the durable row must not duplicate");
+    assert_eq!(page.items[0].title_name, "Salt and Signal (live)");
+}
+
+/// Permission filtering is applied to the merged set, not just the live half:
+/// a durable row for a title the actor cannot see, and an untitled operational
+/// row, both stay hidden.
+#[tokio::test]
+async fn download_history_applies_permission_filtering_to_durable_rows() {
+    let visible_id = scryer_domain::download_identity::DownloadId::new();
+    let operational_id = scryer_domain::download_identity::DownloadId::new();
+    let hidden_id = scryer_domain::download_identity::DownloadId::new();
+    let (app, admin) = history_app_with_durable_rows(Vec::new()).await;
+
+    let visible_title = app
+        .add_title(
+            &admin,
+            NewTitle {
+                name: "Quiet Meridian".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                root_folder_id: None,
+                min_availability: None,
+                poster_url: None,
+                year: Some(2011),
+                overview: None,
+                sort_title: None,
+                slug: None,
+                runtime_minutes: None,
+                language: None,
+                content_status: None,
+            },
+        )
+        .await
+        .expect("movie title should be added");
+    let hidden_title = app
+        .add_title(
+            &admin,
+            NewTitle {
+                name: "Salt and Signal".to_string(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                root_folder_id: None,
+                min_availability: None,
+                poster_url: None,
+                year: Some(2013),
+                overview: None,
+                sort_title: None,
+                slug: None,
+                runtime_minutes: None,
+                language: None,
+                content_status: None,
+            },
+        )
+        .await
+        .expect("series title should be added");
+
+    let mut app = app;
+    app.services.workflow.download_submissions = Arc::new(DurableHistorySubmissionRepo::new(vec![
+        terminal_history_row(
+            visible_id,
+            "visible-1",
+            Some(&visible_title.id),
+            "Quiet Meridian",
+        ),
+        terminal_history_row(operational_id, "operational-1", None, "Unattributed Grab"),
+        terminal_history_row(
+            hidden_id,
+            "hidden-1",
+            Some(&hidden_title.id),
+            "Salt and Signal",
+        ),
+    ]));
+    publish_test_download_queue_snapshot(&app, Vec::new()).await;
+
+    let movie_viewer = library_permission_user(
+        "movie-viewer",
+        &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        &[scryer_domain::LibraryPermission::View],
+    );
+    let page = app
+        .list_download_history_page(
+            &movie_viewer,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("history page should load for the restricted viewer");
+
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|item| item.download_client_item_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["visible-1"],
+        "only the durable row whose title is in a granted library survives"
+    );
+
+    let admin_page = app
+        .list_download_history_page(
+            &admin,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("history page should load for the admin");
+    assert_eq!(
+        admin_page.total_count, 3,
+        "an operator with operational history sees every durable row"
     );
 }

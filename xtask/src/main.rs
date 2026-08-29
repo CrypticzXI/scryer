@@ -167,6 +167,7 @@ enum TrashGuidesCommand {
 #[derive(Subcommand)]
 enum BuiltinsCommand {
     Sync,
+    Materialize,
 }
 
 #[derive(Args)]
@@ -379,6 +380,7 @@ fn delegate_release(ctx: &TaskContext, args: &ReleaseArgs) -> Result<()> {
 fn delegate_builtins(ctx: &TaskContext, args: &BuiltinsArgs) -> Result<()> {
     let forwarded = match args.command {
         BuiltinsCommand::Sync => vec!["builtins".to_string(), "sync".to_string()],
+        BuiltinsCommand::Materialize => vec!["builtins".to_string(), "materialize".to_string()],
     };
     delegate_to_package(ctx, "xtask-release", &forwarded)
 }

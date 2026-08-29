@@ -959,7 +959,7 @@ impl AppUseCase {
             {
                 continue;
             }
-            let candidate_runtime_minutes = crate::acquisition_coverage::coverage_runtime_minutes(
+            let candidate_size_basis = crate::acquisition_coverage::coverage_size_basis(
                 &release_coverage,
                 &scored_release_metadata,
                 &prepared.catalog_episodes,
@@ -1004,9 +1004,7 @@ impl AppUseCase {
                     scored_release_metadata.clone(),
                     result.size_bytes,
                 ),
-                &prepared
-                    .canonical_context
-                    .view(candidate_runtime_minutes, false),
+                &prepared.canonical_context.view(candidate_size_basis, false),
             );
             let decision = scored_release.announced_decision;
 
@@ -1313,6 +1311,13 @@ impl AppUseCase {
                 // The convergence value hint rides the Auto background context so
                 // the scheduler can lane-rank this scope.
                 background_value,
+                // Only the background convergence lanes set a value hint, and
+                // only they may be served from the persisted candidate corpus.
+                // An explicit operator search (queue-best-release, the UI search
+                // buttons) must fire the indexer live: the user is asking what
+                // exists *now*, and a corpus snapshot persisted before a new
+                // release appeared would hide it for the whole reuse window.
+                candidate_reuse_allowed: background_value.is_some(),
             })
         } else {
             None
