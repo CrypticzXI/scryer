@@ -10,10 +10,13 @@ use scryer_application::{
 };
 use scryer_domain::download_identity::DownloadId;
 use scryer_domain::{
-    DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventStream, DomainEventType,
-    DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,
-    ImportTransferPhase, ImportType, MediaFacet, MediaFileDeletedReason, NewDomainEvent,
-    TitleHistoryEventType,
+    DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventPayload, DomainEventStream,
+    DomainEventType, DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord,
+    ImportStatus, ImportTransferPhase, ImportType, MediaFacet, MediaFileDeletedReason,
+    NewDomainEvent, TitleHistoryEventType,
+};
+use scryer_infrastructure_sql::domain_event_payload::{
+    decode_domain_event_payload, encode_domain_event_payload,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{Row, types::Json};
@@ -25,7 +28,7 @@ use crate::types::WorkflowOperationRecord;
 
 use super::download_submission_store::claim_or_create_binding_download_id_tx;
 
-pub const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
+pub const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, event_type, payload_json, import_status, media_file_delete_reason, download_id";
 pub const DOWNLOAD_SUBMISSION_COLUMNS: &str = "id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, info_hash, release_size_bytes, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
 pub const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, import_transfer_phase, import_transfer_bytes, import_transfer_total_bytes, import_transfer_started_at, import_transfer_updated_at, started_at, finished_at, created_at, updated_at";
 pub const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, canonical_download_id, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
@@ -55,13 +58,23 @@ pub async fn append_domain_events(
             let mut out = Vec::with_capacity(events.len());
             for event in events {
                 let payload = serde_json::to_value(&event.payload).map_err(repo_err)?;
+                let event_type = event.payload.event_type().as_str();
+                let encoded_payload = encode_domain_event_payload(&payload).map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to encode domain event {} ({event_type}): {error}",
+                        event.event_id
+                    ))
+                })?;
+                let (import_status, media_file_delete_reason, download_id) =
+                    domain_event_projections(&event.payload);
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "INSERT INTO domain_events (
                         event_id, occurred_at, actor_kind, actor_user_id, actor_display_name,
                         title_id, facet, correlation_id, causation_id, schema_version,
-                        stream_kind, stream_id, event_type, payload_json
-                     ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+                        stream_kind, stream_id, event_type, payload_json, import_status,
+                        media_file_delete_reason, download_id
+                     ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
                     &[
                         SqlArg::Text(event.event_id.clone()),
                         SqlArg::Timestamp(event.occurred_at),
@@ -78,7 +91,10 @@ pub async fn append_domain_events(
                         SqlArg::Text(event.stream.kind().to_string()),
                         SqlArg::OptText(event.stream.identifier().map(str::to_string)),
                         SqlArg::Text(event.payload.event_type().as_str().to_string()),
-                        SqlArg::Json(payload),
+                        SqlArg::OptBytes(Some(encoded_payload)),
+                        SqlArg::OptText(import_status),
+                        SqlArg::OptText(media_file_delete_reason),
+                        SqlArg::OptText(download_id),
                     ],
                 )
                 .await?;
@@ -100,13 +116,23 @@ pub async fn append_domain_event_tx(
     event: NewDomainEvent,
 ) -> AppResult<DomainEvent> {
     let payload = serde_json::to_value(&event.payload).map_err(repo_err)?;
+    let event_type = event.payload.event_type().as_str();
+    let encoded_payload = encode_domain_event_payload(&payload).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to encode domain event {} ({event_type}): {error}",
+            event.event_id
+        ))
+    })?;
+    let (import_status, media_file_delete_reason, download_id) =
+        domain_event_projections(&event.payload);
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO domain_events (
             event_id, occurred_at, actor_kind, actor_user_id, actor_display_name,
             title_id, facet, correlation_id, causation_id, schema_version,
-            stream_kind, stream_id, event_type, payload_json
-         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            stream_kind, stream_id, event_type, payload_json, import_status,
+            media_file_delete_reason, download_id
+         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         &[
             SqlArg::Text(event.event_id.clone()),
             SqlArg::Timestamp(event.occurred_at),
@@ -121,7 +147,10 @@ pub async fn append_domain_event_tx(
             SqlArg::Text(event.stream.kind().to_string()),
             SqlArg::OptText(event.stream.identifier().map(str::to_string)),
             SqlArg::Text(event.payload.event_type().as_str().to_string()),
-            SqlArg::Json(payload),
+            SqlArg::OptBytes(Some(encoded_payload)),
+            SqlArg::OptText(import_status),
+            SqlArg::OptText(media_file_delete_reason),
+            SqlArg::OptText(download_id),
         ],
     )
     .await?;
@@ -129,6 +158,26 @@ pub async fn append_domain_event_tx(
     fetch_domain_event_by_event_id(SqlExec::Tx(tx), &event.event_id)
         .await?
         .ok_or_else(|| AppError::Repository("failed to reload inserted domain event".into()))
+}
+
+fn domain_event_projections(
+    payload: &DomainEventPayload,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let import_status = match payload {
+        DomainEventPayload::ImportRejected(data) => Some(data.status.as_str().to_string()),
+        _ => None,
+    };
+    let media_file_delete_reason = match payload {
+        DomainEventPayload::MediaFileDeleted(data) => Some(data.reason.as_str().to_string()),
+        _ => None,
+    };
+    let download_id = match payload {
+        DomainEventPayload::ReleaseGrabbed(data) => data.download_id.clone(),
+        DomainEventPayload::DownloadFailed(data) => data.download_id.clone(),
+        DomainEventPayload::ReleaseBlocklisted(data) => data.download_id.clone(),
+        _ => None,
+    };
+    (import_status, media_file_delete_reason, download_id)
 }
 
 pub async fn commit_successful_grab_tx(
@@ -929,7 +978,7 @@ pub fn build_domain_event_list_sql(filter: &DomainEventFilter) -> (String, Vec<S
 }
 
 pub fn build_title_history_filter_sql(
-    datastore: &StoreDatastore,
+    _datastore: &StoreDatastore,
     event_types: Option<&[TitleHistoryEventType]>,
     title_ids: Option<&[String]>,
     download_id: Option<&str>,
@@ -990,20 +1039,14 @@ pub fn build_title_history_filter_sql(
                         ));
                     }
                     TitleHistoryEventType::ImportFailed => {
-                        parts.push(format!(
-                            "(event_type = {{}} AND {} = {{}})",
-                            json_extract(datastore, "payload_json", "data", "status")
-                        ));
+                        parts.push("(event_type = {} AND import_status = {})".to_string());
                         args.push(SqlArg::Text(
                             DomainEventType::ImportRejected.as_str().into(),
                         ));
                         args.push(SqlArg::Text(ImportStatus::Failed.as_str().into()));
                     }
                     TitleHistoryEventType::ImportSkipped => {
-                        parts.push(format!(
-                            "(event_type = {{}} AND {} = {{}})",
-                            json_extract(datastore, "payload_json", "data", "status")
-                        ));
+                        parts.push("(event_type = {} AND import_status = {})".to_string());
                         args.push(SqlArg::Text(
                             DomainEventType::ImportRejected.as_str().into(),
                         ));
@@ -1016,10 +1059,9 @@ pub fn build_title_history_filter_sql(
                         ));
                     }
                     TitleHistoryEventType::FileRecycled => {
-                        parts.push(format!(
-                            "(event_type = {{}} AND {} = {{}})",
-                            json_extract(datastore, "payload_json", "data", "reason")
-                        ));
+                        parts.push(
+                            "(event_type = {} AND media_file_delete_reason = {})".to_string(),
+                        );
                         args.push(SqlArg::Text(
                             DomainEventType::MediaFileDeleted.as_str().into(),
                         ));
@@ -1028,11 +1070,7 @@ pub fn build_title_history_filter_sql(
                         ));
                     }
                     TitleHistoryEventType::FileDeleted => {
-                        let reason = json_extract(datastore, "payload_json", "data", "reason");
-                        parts.push(format!(
-                            "(event_type = {{}} AND ({} IS NULL OR {} <> {{}}))",
-                            reason, reason
-                        ));
+                        parts.push("(event_type = {} AND (media_file_delete_reason IS NULL OR media_file_delete_reason <> {}))".to_string());
                         args.push(SqlArg::Text(
                             DomainEventType::MediaFileDeleted.as_str().into(),
                         ));
@@ -1093,10 +1131,7 @@ pub fn build_title_history_filter_sql(
         }
     }
     if let Some(download_id) = download_id {
-        clauses.push(format!(
-            "{} = {{}}",
-            json_extract(datastore, "payload_json", "data", "download_id")
-        ));
+        clauses.push("download_id = {}".to_string());
         args.push(SqlArg::Text(download_id.to_string()));
     }
     (format!(" WHERE {}", clauses.join(" AND ")), args)
@@ -1124,13 +1159,12 @@ pub const DASHBOARD_ACTIVITY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
 /// Callers must reject an empty `library_ids` before calling: an empty `IN ()`
 /// list is not valid SQL on either dialect.
 pub fn build_dashboard_activity_stats_sql(
-    datastore: &StoreDatastore,
+    _datastore: &StoreDatastore,
     library_ids: &[String],
     previous_start: DateTime<Utc>,
     current_start: DateTime<Utc>,
     current_end: DateTime<Utc>,
 ) -> (String, Vec<SqlArg>) {
-    let import_status = json_extract(datastore, "domain_events.payload_json", "data", "status");
     let mut args = vec![SqlArg::Timestamp(current_start)];
     args.push(SqlArg::Timestamp(previous_start));
     args.push(SqlArg::Timestamp(current_end));
@@ -1149,14 +1183,14 @@ pub fn build_dashboard_activity_stats_sql(
         "SELECT
              CASE WHEN domain_events.occurred_at >= {{}} THEN 'current' ELSE 'previous' END AS window_key,
              domain_events.event_type AS event_type,
-             {import_status} AS import_status,
+             domain_events.import_status AS import_status,
              COUNT(*) AS event_count
            FROM domain_events
            JOIN titles ON titles.id = domain_events.title_id
           WHERE domain_events.occurred_at >= {{}}
             AND domain_events.occurred_at < {{}}
             AND domain_events.event_type IN ({event_type_placeholders})
-            AND (domain_events.event_type <> {{}} OR {import_status} = {{}})
+            AND (domain_events.event_type <> {{}} OR domain_events.import_status = {{}})
             AND titles.library_id IN ({library_placeholders})
           GROUP BY window_key, event_type, import_status",
         event_type_placeholders = placeholders(DASHBOARD_ACTIVITY_DOMAIN_EVENT_TYPES.len()),
@@ -1315,11 +1349,27 @@ pub async fn fetch_optional_workflow_operation(
 }
 
 pub fn domain_event_from_row(row: &SqlRow) -> AppResult<DomainEvent> {
+    let event_id = row.text("event_id")?;
+    let event_type = row.text("event_type")?;
     let stream_kind = row.text("stream_kind")?;
-    let payload = serde_json::from_value(json_from_row(row, "payload_json")?).map_err(repo_err)?;
+    let encoded_payload = row.opt_bytes("payload_json")?.ok_or_else(|| {
+        AppError::Repository(format!(
+            "domain event {event_id} ({event_type}) payload is null"
+        ))
+    })?;
+    let decoded_payload = decode_domain_event_payload(&encoded_payload).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to decode domain event {event_id} ({event_type}): {error}"
+        ))
+    })?;
+    let payload = serde_json::from_value(decoded_payload).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to deserialize domain event {event_id} ({event_type}): {error}"
+        ))
+    })?;
     Ok(DomainEvent {
         sequence: row.i64("sequence")?,
-        event_id: row.text("event_id")?,
+        event_id,
         occurred_at: row.timestamp("occurred_at")?,
         actor_kind: DomainEventActorKind::parse(row.text("actor_kind")?.as_str())
             .unwrap_or(DomainEventActorKind::System),

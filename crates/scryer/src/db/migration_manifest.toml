@@ -1525,6 +1525,52 @@ hook_id = "migrate_title_catalog_sort_keys"
 engine = "all"
 scope = "all"
 
+[[migration]]
+version = 197
+description = "compact domain events and release decision explanations"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0197_compact_event_storage_pre.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0197_compact_event_storage.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "compact_event_storage"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0197_compact_event_storage_post.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration]]
+version = 198
+description = "seed canonical postgres defaults outside the released baseline"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0198_seed_canonical_defaults.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0198_seed_canonical_defaults.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

@@ -25,6 +25,8 @@ use crate::queries::common::parse_utc_datetime;
 use crate::queries::sql_runtime::repo_err;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
 
+use super::{decode_release_decision_explanation, encode_release_decision_explanation};
+
 // Throttle the SQLite full VACUUM so it does not run on every
 // daily maintenance tick. `auto_vacuum` is not enabled on the connection, so
 // `PRAGMA incremental_vacuum` would be a no-op; instead gate a full VACUUM on
@@ -333,8 +335,10 @@ fn wanted_seed_row_to_item(row: &SqlRow) -> AppResult<AcquisitionScopeState> {
 }
 
 fn release_decision_row_to_item(row: &SqlRow) -> AppResult<ReleaseDecision> {
+    let id = row.text("id")?;
     Ok(ReleaseDecision {
-        id: row.text("id")?,
+        explanation_json: release_decision_explanation_from_row(row, "explanation_json", &id)?,
+        id,
         wanted_item_id: row.text("wanted_item_id")?,
         title_id: row.text("title_id")?,
         release_title: row.text("release_title")?,
@@ -344,14 +348,27 @@ fn release_decision_row_to_item(row: &SqlRow) -> AppResult<ReleaseDecision> {
         candidate_score: row.i32("candidate_score")?,
         current_score: row.opt_i32("current_score")?,
         score_delta: row.opt_i32("score_delta")?,
-        explanation_json: match row {
-            SqlRow::Sqlite(_) => row.opt_text("explanation_json")?,
-            SqlRow::Postgres(_) => row
-                .opt_json("explanation_json")?
-                .map(|value| value.to_string()),
-        },
         created_at: required_timestamp_text(row, "created_at")?,
     })
+}
+
+fn release_decision_explanation_from_row(
+    row: &SqlRow,
+    column: &str,
+    decision_id: &str,
+) -> AppResult<Option<String>> {
+    let encoded = row.opt_bytes(column)?;
+    match decode_release_decision_explanation(encoded.as_deref()) {
+        Ok(explanation) => Ok(explanation),
+        Err(error) => {
+            tracing::warn!(
+                decision_id,
+                error = %error,
+                "release decision explanation could not be decoded"
+            );
+            Ok(None)
+        }
+    }
 }
 
 fn json_text_from_row(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
@@ -366,6 +383,11 @@ fn json_text_from_row(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
 fn wanted_row_to_item(row: &SqlRow) -> AppResult<AcquisitionScopeState> {
     let latest_release_decision = match row.opt_text("latest_decision_id")? {
         Some(id) => Some(ReleaseDecision {
+            explanation_json: release_decision_explanation_from_row(
+                row,
+                "latest_decision_explanation_json",
+                &id,
+            )?,
             id,
             wanted_item_id: row.text("latest_decision_wanted_item_id")?,
             title_id: row.text("latest_decision_title_id")?,
@@ -378,7 +400,6 @@ fn wanted_row_to_item(row: &SqlRow) -> AppResult<AcquisitionScopeState> {
                 .unwrap_or_default(),
             current_score: row.opt_i32("latest_decision_current_score")?,
             score_delta: row.opt_i32("latest_decision_score_delta")?,
-            explanation_json: json_text_from_row(row, "latest_decision_explanation_json")?,
             created_at: required_timestamp_text(row, "latest_decision_created_at")?,
         }),
         None => None,
@@ -923,6 +944,18 @@ impl AcquisitionScopeStateRepository for WantedStore {
     }
 
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String> {
+        let explanation_json =
+            match encode_release_decision_explanation(decision.explanation_json.as_deref()) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    tracing::warn!(
+                        decision_id = %decision.id,
+                        error = %error,
+                        "release decision explanation could not be encoded"
+                    );
+                    None
+                }
+            };
         execute_datastore_write(
             &self.datastore,
             "insert_release_decision",
@@ -941,7 +974,7 @@ impl AcquisitionScopeStateRepository for WantedStore {
                 SqlArg::I32(decision.candidate_score),
                 SqlArg::OptI32(decision.current_score),
                 SqlArg::OptI32(decision.score_delta),
-                opt_json_arg_for_datastore(&self.datastore, decision.explanation_json.as_deref())?,
+                SqlArg::OptBytes(explanation_json),
                 timestamp_arg_for_datastore(&self.datastore, &decision.created_at)?,
             ],
         )
@@ -1232,7 +1265,7 @@ impl HousekeepingRepository for HousekeepingStore {
 
         let sql = format!(
             "DELETE FROM domain_events
-              WHERE occurred_at < {{}}
+              WHERE occurred_at <= {{}}
                 AND event_type IN ({})",
             placeholders(event_types.len())
         );

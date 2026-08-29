@@ -1,0 +1,22 @@
+{
+  "format_byte": 1,
+  "compression_level": 3,
+  "dictionary_bytes": 8192,
+  "sanitizer_version": 1,
+  "domain_events": {
+    "corpus_samples": 70,
+    "corpus_blake3": "878cc0df6db956eb79a35589765855fc914da0113e722f9807dbbaf1969388a5",
+    "dictionary_blake3": "bd7e42c8044b81ba9b3415e59f412d2c2a1097fab0786eb5e5e2d163802a407b",
+    "held_out_raw_bytes": 9316655,
+    "plain_zstd3_ratio": 0.7674,
+    "dictionary_zstd3_ratio": 0.5328
+  },
+  "release_decisions": {
+    "corpus_samples": 369,
+    "corpus_blake3": "6445c720811438288ecd9f5ef2279b883226ab48a4d8e1110463decd213a5208",
+    "dictionary_blake3": "85d1fa8ea9252131cedab61e20ee5b6b2e76072e5ec2a6c45db3ae03413ecc60",
+    "held_out_raw_bytes": 4760757,
+    "plain_zstd3_ratio": 0.5323,
+    "dictionary_zstd3_ratio": 0.4586
+  }
+}

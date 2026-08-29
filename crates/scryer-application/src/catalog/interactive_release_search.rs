@@ -569,7 +569,7 @@ impl AppUseCase {
         }
 
         let now = self.runtime.environment.now();
-        let completion = {
+        {
             let mut registry = self
                 .runtime
                 .acquisition
@@ -594,22 +594,7 @@ impl AppUseCase {
             if entry.snapshot.state == InteractiveReleaseSearchState::Running {
                 entry.snapshot.state = InteractiveReleaseSearchState::Completed;
                 entry.snapshot.completed_at = Some(now);
-                Some(entry.snapshot.results.len())
-            } else {
-                None
             }
-        };
-
-        // Once per job (never per indexer), and only when the job actually
-        // completed — a cancelled one-shot search does not emit either.
-        if let Some(result_count) = completion {
-            self.emit_discovery_search_completed_event(
-                &actor,
-                subject.category.clone(),
-                subject.queries.first().cloned(),
-                result_count as i64,
-            )
-            .await;
         }
     }
 

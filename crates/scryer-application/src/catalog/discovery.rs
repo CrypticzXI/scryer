@@ -1864,14 +1864,6 @@ impl AppUseCase {
         self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
             .await;
 
-        self.emit_discovery_search_completed_event(
-            actor,
-            subject.category.clone(),
-            subject.queries.first().cloned(),
-            results.len() as i64,
-        )
-        .await;
-
         Ok(results)
     }
 
@@ -1933,14 +1925,6 @@ impl AppUseCase {
         self.attach_candidate_tokens(actor, &search_title, &subject, &mut results, true)
             .await;
 
-        self.emit_discovery_search_completed_event(
-            actor,
-            subject.category.clone(),
-            subject.queries.first().cloned(),
-            results.len() as i64,
-        )
-        .await;
-
         Ok(results)
     }
 
@@ -1991,14 +1975,6 @@ impl AppUseCase {
             .await?;
         self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
             .await;
-
-        self.emit_discovery_search_completed_event(
-            actor,
-            subject.category.clone(),
-            subject.queries.first().cloned(),
-            results.len() as i64,
-        )
-        .await;
 
         Ok(results)
     }

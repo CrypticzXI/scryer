@@ -3,7 +3,8 @@ use crate::domain_events::{
     DomainEventActor, deleted_media_update, new_title_domain_event, title_context_snapshot,
 };
 use crate::events::retention::{
-    OPERATIONAL_DOMAIN_EVENT_RETENTION_DAYS, operational_domain_event_types,
+    ACQUISITION_TELEMETRY_RETENTION_DAYS, OPERATIONAL_DOMAIN_EVENT_RETENTION_DAYS,
+    acquisition_telemetry_domain_event_types, operational_domain_event_types,
     user_facing_domain_event_types,
 };
 use std::collections::{HashMap, HashSet};
@@ -764,10 +765,20 @@ impl AppUseCase {
                 &operational_domain_event_types,
             )
             .await?;
+        let stale_acquisition_telemetry = self
+            .services
+            .workflow
+            .housekeeping
+            .delete_domain_events_older_than_for_types(
+                ACQUISITION_TELEMETRY_RETENTION_DAYS,
+                &acquisition_telemetry_domain_event_types(),
+            )
+            .await?;
 
         let stale_history_records = stale_release_decisions
             + stale_release_attempts
             + stale_operational_domain_events
+            + stale_acquisition_telemetry
             + stale_history_events
             + stale_domain_events
             + stale_download_import_artifacts

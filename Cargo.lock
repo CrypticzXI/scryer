@@ -5945,6 +5945,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+ "zstd",
  "zune-core",
 ]
 
@@ -6044,6 +6045,7 @@ dependencies = [
 name = "scryer-infrastructure-sql"
 version = "0.18.22"
 dependencies = [
+ "blake3",
  "chrono",
  "scryer-application",
  "serde",
@@ -6051,6 +6053,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+ "zstd",
 ]
 
 [[package]]

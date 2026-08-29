@@ -10,12 +10,11 @@ use crate::event_views::{
 use crate::events::retention::user_facing_domain_event_types;
 use scryer_domain::{
     AcquisitionCandidateRejectedEventData, AcquisitionSearchCompletedEventData, AppPermission,
-    ConfigurationChangeAction, ConfigurationChangedEventData, DiscoverySearchCompletedEventData,
-    DomainEventPayload, DownloadQueueCommandAction, DownloadQueueItemCommandIssuedEventData,
-    ImportRequestKind, ImportRequestedEventData, LibraryPermission, MediaFacet,
-    MetadataHydrationState, MetadataHydrationUpdatedEventData, PostProcessingCompletedEventData,
-    PostProcessingResult, SubtitleDownloadedEventData, SubtitleSearchFailedEventData,
-    TitleUpdatedEventData,
+    ConfigurationChangeAction, ConfigurationChangedEventData, DomainEventPayload,
+    DownloadQueueCommandAction, DownloadQueueItemCommandIssuedEventData, ImportRequestKind,
+    ImportRequestedEventData, LibraryPermission, MediaFacet, MetadataHydrationState,
+    MetadataHydrationUpdatedEventData, PostProcessingCompletedEventData, PostProcessingResult,
+    SubtitleDownloadedEventData, SubtitleSearchFailedEventData, TitleUpdatedEventData,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -793,29 +792,6 @@ impl AppUseCase {
             .await
         {
             tracing::warn!(error = %error, "failed to append configuration changed domain event");
-        }
-    }
-
-    pub(crate) async fn emit_discovery_search_completed_event(
-        &self,
-        actor: impl Into<DomainEventActor>,
-        search_type: impl Into<String>,
-        query: Option<String>,
-        result_count: i64,
-    ) {
-        let actor = actor.into();
-        if let Err(error) = self
-            .append_domain_event(new_global_domain_event(
-                actor,
-                DomainEventPayload::DiscoverySearchCompleted(DiscoverySearchCompletedEventData {
-                    search_type: search_type.into(),
-                    query,
-                    result_count,
-                }),
-            ))
-            .await
-        {
-            tracing::warn!(error = %error, "failed to append discovery search domain event");
         }
     }
 
