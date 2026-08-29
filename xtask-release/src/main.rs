@@ -314,6 +314,7 @@ struct BuiltinsArgs {
 #[derive(Subcommand)]
 enum BuiltinsCommand {
     Sync,
+    Materialize,
 }
 
 #[derive(Args)]
@@ -524,6 +525,12 @@ fn main() -> Result<()> {
             BuiltinsCommand::Sync => {
                 let scryer_version = package_version(&ctx.path("crates/scryer/Cargo.toml"))?;
                 refresh_builtin_plugins(&ctx, &scryer_version, None, true)?;
+                Ok(())
+            }
+            BuiltinsCommand::Materialize => {
+                let scryer_version = package_version(&ctx.path("crates/scryer/Cargo.toml"))?;
+                let manifest = load_builtin_version_manifest(&ctx)?;
+                refresh_builtin_plugins(&ctx, &scryer_version, Some(&manifest), false)?;
                 Ok(())
             }
         },
